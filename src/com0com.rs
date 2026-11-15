@@ -13,8 +13,8 @@ mod embedded {
 }
 
 /// Files setupc needs beside it to create pairs and install the driver.
-pub const REQUIRED: &[&str] =
-    &["setupc.exe", "setup.dll", "com0com.inf", "com0com.sys", "com0com.cat", "cncport.inf", "comport.inf"];
+/// (com0com 2.2.2.0 signed x64: the .sys is signed through com0com.cat.)
+pub const REQUIRED: &[&str] = &["setupc.exe", "setup.dll", "com0com.inf", "com0com.sys", "com0com.cat"];
 
 pub fn has_embedded() -> bool {
     !embedded::FILES.is_empty()

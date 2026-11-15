@@ -3,13 +3,19 @@
 Put the **signed x64 com0com 2.2.2.0** files here, and `cargo build` embeds them into `comtap.exe`:
 
 ```
-cncport.inf  com0com.cat  com0com.inf  com0com.sys  comport.inf  setup.dll  setupc.exe
+setupc.exe  setup.dll  com0com.inf  com0com.sys  com0com.cat  ReadMe.txt
 ```
 
-Where to get them:
+How to get them, without running the com0com installer:
 
-1. Download `com0com-2.2.2.0-x64-fre-signed.zip` from https://sourceforge.net/projects/com0com/files/com0com/2.2.2.0/
-2. The zip holds an installer exe. Open it with 7-Zip (Open archive), or install it once on a dev PC and copy the files from `C:\Program Files (x86)\com0com`.
-3. Also keep the `license.txt` from the same package. com0com is GPL, so its licence ships with ComTap.
+```powershell
+# com0com-2.2.2.0-x64-fre-signed.zip from https://sourceforge.net/projects/com0com/files/com0com/2.2.2.0/
+& "C:\Program Files\7-Zip\7z.exe" x com0com-2.2.2.0-x64-fre-signed.zip -oc0c-zip
+& "C:\Program Files\7-Zip\7z.exe" x c0c-zip\com0com-2.2.2.0-x64-fre-signed\setup.exe -oc0c-inst
+copy c0c-inst\setupc.exe, c0c-inst\setup.dll, c0c-inst\com0com.*, c0c-inst\ReadMe.txt vendor\com0com\
+```
+
+- `com0com.cat` is signed by "Steven William Hatchett" (2011, timestamped). It signs `com0com.sys`.
+- `ReadMe.txt` carries com0com's GPL notice, and ships with ComTap.
 
 The binaries are git-ignored. Only this README is committed.

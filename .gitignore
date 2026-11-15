@@ -1,2 +1,4 @@
 /target
 logs/
+vendor/com0com/*
+!vendor/com0com/README.md

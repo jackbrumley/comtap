@@ -13,6 +13,12 @@ struct State {
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 static ECHO: AtomicBool = AtomicBool::new(true);
+static RECENT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// The last few log messages (without timestamps), for the screen.
+pub fn recent() -> Vec<String> {
+    RECENT.lock().unwrap().clone()
+}
 
 pub fn init(dir: PathBuf, echo: bool) {
     ECHO.store(echo, Ordering::Relaxed);
@@ -38,6 +44,14 @@ pub fn write(msg: &str) {
     let line = format!("{} {}", now.format("%Y-%m-%d %H:%M:%S%.3f"), msg);
     if ECHO.load(Ordering::Relaxed) {
         println!("{line}");
+    }
+    {
+        let mut r = RECENT.lock().unwrap();
+        r.push(msg.to_string());
+        let n = r.len();
+        if n > 50 {
+            r.drain(..n - 50);
+        }
     }
     let mut guard = STATE.lock().unwrap();
     let Some(st) = guard.as_mut() else { return };

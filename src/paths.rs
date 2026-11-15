@@ -34,6 +34,15 @@ pub fn logs_dir() -> PathBuf {
     data_dir().join("logs")
 }
 
+pub fn traffic_dir() -> PathBuf {
+    data_dir().join("traffic")
+}
+
+/// ComTap.lnk on the Public Desktop (every user sees it).
+pub fn shortcut() -> PathBuf {
+    env_dir("PUBLIC", r"C:\Users\Public").join("Desktop").join("ComTap.lnk")
+}
+
 pub fn exe_dir() -> PathBuf {
     std::env::current_exe()
         .ok()

@@ -3,6 +3,7 @@
 use crate::config::Link;
 use crate::log;
 use crate::status::{Shared, now, set_state};
+use crate::traffic::{Dir, Traffic};
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
@@ -44,7 +45,7 @@ pub fn nap(dur: Duration, stop: &AtomicBool) {
 }
 
 /// Runs one link for ever: opens the COM side, then keeps the TCP side connected.
-pub fn run_link(link: Link, device_path: String, stop: Arc<AtomicBool>, st: Shared) {
+pub fn run_link(link: Link, device_path: String, stop: Arc<AtomicBool>, st: Shared, traffic: Arc<Traffic>) {
     let mut last_err = String::new();
     while !stop.load(Ordering::Relaxed) {
         let opened = serialport::new(&device_path, 115_200).timeout(POLL).open();
@@ -54,6 +55,7 @@ pub fn run_link(link: Link, device_path: String, stop: Arc<AtomicBool>, st: Shar
                 let msg = format!("cannot open {device_path}: {e}");
                 if msg != last_err {
                     log!("[{}] {msg}. Retrying every 5 s.", link.name);
+                    traffic.event(&msg);
                     last_err = msg.clone();
                 }
                 set_state(&st, "com-error", Some(msg));
@@ -66,13 +68,15 @@ pub fn run_link(link: Link, device_path: String, stop: Arc<AtomicBool>, st: Shar
         let _ = port.write_data_terminal_ready(true);
         let _ = port.write_request_to_send(true);
         log!("[{}] Opened {device_path} (software side {})", link.name, link.com);
-        if let Err(e) = run_with_device(&link, Box::new(port), &stop, &st) {
+        if let Err(e) = run_with_device(&link, Box::new(port), &stop, &st, &traffic) {
             let msg = format!("{device_path} failed: {e}");
             log!("[{}] {msg}. Reopening.", link.name);
+            traffic.event(&msg);
             set_state(&st, "com-error", Some(msg));
             nap(Duration::from_secs(1), &stop);
         }
     }
+    traffic.event("stopped");
     set_state(&st, "stopped", None);
 }
 
@@ -114,7 +118,13 @@ fn drain(dev: &mut dyn Device, dur: Duration, stop: &AtomicBool) -> io::Result<(
 }
 
 /// Keeps `link.tcp` connected and bridged to `dev` until stop (Ok) or the device fails (Err).
-pub fn run_with_device(link: &Link, mut dev: Box<dyn Device>, stop: &AtomicBool, st: &Shared) -> io::Result<()> {
+pub fn run_with_device(
+    link: &Link,
+    mut dev: Box<dyn Device>,
+    stop: &AtomicBool,
+    st: &Shared,
+    traffic: &Arc<Traffic>,
+) -> io::Result<()> {
     let mut backoff = BACKOFF_START;
     let mut last_err = String::new();
     while !stop.load(Ordering::Relaxed) {
@@ -125,6 +135,7 @@ pub fn run_with_device(link: &Link, mut dev: Box<dyn Device>, stop: &AtomicBool,
                 let msg = format!("connect {}: {e}", link.tcp);
                 if msg != last_err {
                     log!("[{}] {msg}. Retrying.", link.name);
+                    traffic.event(&msg);
                     last_err = msg.clone();
                 }
                 set_state(st, "retrying", Some(msg));
@@ -139,10 +150,12 @@ pub fn run_with_device(link: &Link, mut dev: Box<dyn Device>, stop: &AtomicBool,
         st.lock().unwrap().connects += 1;
         set_state(st, "connected", None);
         log!("[{}] Connected to {}", link.name, link.tcp);
+        traffic.event(&format!("connected to {}", link.tcp));
 
-        let reason = session(link, dev.as_mut(), tcp, stop, st)?;
+        let reason = session(link, dev.as_mut(), tcp, stop, st, traffic)?;
         if !stop.load(Ordering::Relaxed) {
             log!("[{}] Disconnected from {}: {reason}", link.name, link.tcp);
+            traffic.event(&format!("disconnected: {reason}"));
             set_state(st, "retrying", Some(format!("disconnected: {reason}")));
             drain(dev.as_mut(), BACKOFF_START, stop)?;
         }
@@ -151,7 +164,14 @@ pub fn run_with_device(link: &Link, mut dev: Box<dyn Device>, stop: &AtomicBool,
 }
 
 /// Bridges one TCP connection. Returns why it ended, or Err if the COM side failed.
-fn session(link: &Link, dev: &mut dyn Device, tcp: TcpStream, stop: &AtomicBool, st: &Shared) -> io::Result<String> {
+fn session(
+    link: &Link,
+    dev: &mut dyn Device,
+    tcp: TcpStream,
+    stop: &AtomicBool,
+    st: &Shared,
+    traffic: &Arc<Traffic>,
+) -> io::Result<String> {
     let done = Arc::new(AtomicBool::new(false));
     let dev_failed: Arc<std::sync::Mutex<Option<io::Error>>> = Arc::default();
 
@@ -163,6 +183,7 @@ fn session(link: &Link, dev: &mut dyn Device, tcp: TcpStream, stop: &AtomicBool,
         let dev_failed = dev_failed.clone();
         let st = st.clone();
         let name = link.name.clone();
+        let traffic = traffic.clone();
         std::thread::spawn(move || -> String {
             let mut buf = [0u8; 4096];
             let mut dropped = 0u64;
@@ -178,6 +199,7 @@ fn session(link: &Link, dev: &mut dyn Device, tcp: TcpStream, stop: &AtomicBool,
                             s.rx_bytes += n as u64;
                             s.last_rx = Some(now());
                         }
+                        traffic.record(Dir::Rx, &buf[..n]);
                         match dev_w.write_all(&buf[..n]) {
                             Ok(()) => {}
                             // The software isn't reading (or has the port closed): drop rather than stall.
@@ -210,7 +232,10 @@ fn session(link: &Link, dev: &mut dyn Device, tcp: TcpStream, stop: &AtomicBool,
         match dev.read(&mut buf) {
             Ok(0) => std::thread::sleep(POLL),
             Ok(n) => match tcp_w.write_all(&buf[..n]) {
-                Ok(()) => st.lock().unwrap().tx_bytes += n as u64,
+                Ok(()) => {
+                    st.lock().unwrap().tx_bytes += n as u64;
+                    traffic.record(Dir::Tx, &buf[..n]);
+                }
                 Err(e) => {
                     my_reason = Some(format!("send failed: {e}"));
                     break;
@@ -267,7 +292,7 @@ mod tests {
 
         let t = {
             let (link, stop, st) = (link.clone(), stop.clone(), st.clone());
-            std::thread::spawn(move || run_with_device(&link, Box::new(com_side), &stop, &st))
+            std::thread::spawn(move || run_with_device(&link, Box::new(com_side), &stop, &st, &Arc::new(Traffic::disabled())))
         };
 
         // First connection: a barcode reaches the software, and a trigger reaches the scanner.
@@ -303,7 +328,7 @@ mod tests {
         let st: Shared = Arc::default();
         let t = {
             let (link, stop, st) = (link.clone(), stop.clone(), st.clone());
-            std::thread::spawn(move || run_with_device(&link, Box::new(com_side), &stop, &st))
+            std::thread::spawn(move || run_with_device(&link, Box::new(com_side), &stop, &st, &Arc::new(Traffic::disabled())))
         };
         // Windows takes about 2 s to report a refused connection on localhost.
         let end = Instant::now() + Duration::from_secs(10);

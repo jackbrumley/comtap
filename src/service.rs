@@ -162,10 +162,25 @@ pub fn delete() -> Result<()> {
     Ok(())
 }
 
+pub fn is_installed() -> bool {
+    manager(ServiceManagerAccess::CONNECT)
+        .and_then(|m| m.open_service(NAME, ServiceAccess::QUERY_STATUS).map_err(Into::into))
+        .is_ok()
+}
+
 /// "Running", "Stopped", ... or "not installed".
 pub fn state_text() -> String {
+    query_text(NAME)
+}
+
+/// State of the com0com kernel driver, which Windows also lists as a service.
+pub fn driver_state_text() -> String {
+    query_text("com0com")
+}
+
+fn query_text(name: &str) -> String {
     let Ok(m) = manager(ServiceManagerAccess::CONNECT) else { return "unknown".into() };
-    match m.open_service(NAME, ServiceAccess::QUERY_STATUS) {
+    match m.open_service(name, ServiceAccess::QUERY_STATUS) {
         Ok(s) => match s.query_status() {
             Ok(st) => format!("{:?}", st.current_state),
             Err(e) => format!("unknown ({e})"),

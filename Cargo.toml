@@ -1,0 +1,15 @@
+[package]
+name = "comtap"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Bridge TCP devices to virtual COM ports, as a self-healing Windows service."
+repository = "https://github.com/jackbrumley/comtap"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

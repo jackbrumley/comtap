@@ -14,30 +14,53 @@ It's a sister tool to [RawTap](https://github.com/jackbrumley/rawtap). It's one 
 
 ## The screen
 
-Double-click `comtap.exe`, or the **ComTap** shortcut that install puts on the Public Desktop.
+Double-click `comtap.exe`, or the **ComTap** shortcut that install puts on the Public Desktop. It looks and works like RawTap.
+
+**First run:** a welcome page explains the three steps and asks for admin once (UAC). Then:
+
+1. **Device form** (like RawTap's setup box): name, device IP, TCP port, and the COM port your software will open. ←→ picks from free ports only. Ports Windows has reserved for other devices, even unplugged ones, are left out. **F5** tests the connection.
+2. **Install checklist:** every step is ticked as it runs, so you can see exactly what happened:
 
 ```
- ComTap 0.1.0  TCP devices as COM ports                              VIEW ONLY · F2 admin
-┌ Status ───────────────────────────────────────────────────────────────────────────────┐
-│Service  ● Running  · starts on boot                                                   │
-│Driver   ● com0com Running  · files inside exe                                         │
-└───────────────────────────────────────────────────────────────────────────────────────┘
-┌ Scanners ─────────────────────────────────────────────────────────────────────────────┐
-│▶ ● Line 1 scanner     COM5   ⇄ 192.168.1.50:51236     connected  last data 12:01:40   │
-│  ● Line 2 scanner     COM6   ⇄ 192.168.1.51:51236     retrying                        │
-└───────────────────────────────────────────────────────────────────────────────────────┘
-┌ Line 1 scanner · traffic · hex+text (F8) · following ─────────────────────────────────┐
-│12:01:20 -- connected to 192.168.1.50:51236                                            │
-│12:01:29 RX 30 39 38 37 36 35 34 33 32 31 0D 0A              0987654321<CR><LF>        │
-│12:01:40 TX 54 0D                                            T<CR>                     │
-└───────────────────────────────────────────────────────────────────────────────────────┘
- ↑↓ select · Enter edit · A add · D delete · S service · F8 format · PgUp/PgDn scroll · L folder · Q quit
+   √  Check administrator rights
+   √  Save settings
+   √  Copy ComTap to Program Files
+   √  Unpack the com0com driver
+   -  Remove other com0com driver versions      none found
+   √  Trust the com0com driver publisher
+   √  Create the virtual COM ports              COM23
+   √  Install the ComTap service (starts at boot)
+   √  Start the service
+   √  Create the desktop shortcut
+   √  Check each device connects                1 connected
+
+   Done.  Your software can now open COM23.
 ```
 
-- **Anyone can view** the service, the driver, each scanner and its live traffic. **Changes need admin.** Press F2, or any change key, and ComTap offers to reopen itself as admin (UAC prompt).
-- **Enter / A** edits or adds a scanner: name, IP, port, COM port (←→ picks a free one), and **F5 tests the connection**. Saving applies straight away: it fixes the ports and restarts the service.
-- **S** opens the service menu: Install; or Restart, Stop/Start, Repair virtual ports, Reinstall, Uninstall.
-- **Several scanners:** add one link per scanner. One service runs them all, each with its own COM port.
+If a step fails, it shows × with the reason, and Enter goes back to the form to fix it.
+
+**After that:** the main screen.
+
+```
+ ComTap   ● SERVICE RUNNING   driver com0com Running                      VIEW ONLY · F2 admin
+┌ Devices ───────────────────────────────────────────────────────────────────────────────────┐
+│ ► ● Dock 3 scanner      COM23  ↔ 10.1.128.186:51236     connected     last data 12:01:29   │
+│   ● Scale               COM24  ↔ 10.1.128.190:4001      retrying                           │
+└────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Traffic · Dock 3 scanner · hex+text (F8) ──────────────────────────────────────────────────┐
+│12:01:20.000 √ connected to 10.1.128.186:51236                                              │
+│12:01:29.120 RX HEX  30 39 38 37 36 35 34 33 32 31 0D 0A                                    │
+│12:01:29.120 RX TEXT 0987654321<CR><LF>                                                     │
+│12:01:40.002 TX HEX  54 0D                                                                  │
+│12:01:40.002 TX TEXT T<CR>                                                                  │
+└────────────────────────────────────────────────────────────────────────────────────────────┘
+ F1 menu  ↑↓ device  Enter edit  A add  D delete  F8 format  PgUp/PgDn scroll  L logs  Q quit
+```
+
+- **Anyone can view.** Changes need admin: ComTap offers to reopen itself as admin, straight back at what you chose.
+- **F1** opens the menu (type to filter): add, edit or delete a device, restart, stop or start the service, repair virtual ports, reinstall, uninstall, open the log folder.
+- **Any number of devices:** each gets its own COM port. One service runs them all.
+- Saving a device applies it straight away, with the same kind of checklist.
 
 ## Command line
 

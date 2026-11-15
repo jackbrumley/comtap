@@ -1,13 +1,16 @@
-//! The interactive screen: double-click comtap.exe (or the desktop shortcut).
-//! Anyone can view. Changes need admin, and ComTap offers to reopen itself elevated.
+//! The interactive screen, styled like RawTap: double-click comtap.exe or the desktop shortcut.
+//!
+//! New user:  Welcome -> device form -> install checklist -> main screen.
+//! Installed: main screen. Anyone can look; changes reopen ComTap as admin.
 use crate::config::{Config, Link};
+use crate::setup::{self, Plan, St};
 use crate::status::StatusFile;
 use crate::traffic::{self, Dir};
 use crate::{codec, com0com, paths, service, status};
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
@@ -15,10 +18,32 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
+const ACCENT: Color = Color::Cyan;
+const DIM: Style = Style::new().fg(Color::DarkGray);
 const SPIN: [&str; 4] = ["|", "/", "-", "\\"];
 const TAIL_BYTES: u64 = 256 * 1024;
+// Glyphs that the default console font (Consolas) has. ▶ ⇄ ✔ ✘ show as boxes there.
+const MARK: &str = "►";
+const LEFT: &str = "◄";
+const BOTH: &str = "↔";
+const OK: &str = "√";
+const BAD: &str = "×";
 
-#[derive(Clone, Copy, PartialEq)]
+fn badge(t: &str, bg: Color) -> Span<'static> {
+    Span::styled(format!(" {t} "), Style::new().fg(Color::Black).bg(bg).add_modifier(Modifier::BOLD))
+}
+
+fn title(t: &str) -> Line<'static> {
+    Line::from(vec![badge("ComTap", ACCENT), Span::raw(format!(" {t} "))])
+}
+
+fn hints(t: &str) -> Line<'static> {
+    Line::from(Span::styled(format!(" {t} "), DIM))
+}
+
+// ---------------------------------------------------------------- state
+
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Fmt {
     Compact,
     HexText,
@@ -49,32 +74,78 @@ const F_NAME: usize = 0;
 const F_HOST: usize = 1;
 const F_PORT: usize = 2;
 const F_COM: usize = 3;
-const LABELS: [&str; 4] = ["Name", "Scanner IP / host", "TCP port", "COM port"];
+const LABELS: [&str; 4] = ["Name", "Device IP", "TCP port", "COM port"];
+const HELP: [&str; 4] = [
+    "A label for this device, shown on this screen and in the logs. For example: Dock 3 scanner.",
+    "The device's IP address or network name. ComTap connects to it as a TCP client.",
+    "The TCP port the device sends its data on. You find it in the device's network settings.",
+    "The COM port your software will open. Only free ports are listed. Use ←→ to change it.",
+];
 
 struct Form {
-    /// None = adding a new link.
+    /// None = a new device.
     idx: Option<usize>,
     fields: [String; 4],
     focus: usize,
     coms: Vec<String>,
+    /// True when ComTap isn't installed yet: Enter installs.
+    install: bool,
     err: Option<String>,
-    test: Option<Receiver<String>>,
-    test_msg: Option<String>,
+    test: Option<Receiver<(bool, String)>>,
+    test_msg: Option<(bool, String)>,
 }
 
-enum Mode {
+/// Where to go when a progress screen is closed.
+enum After {
     Main,
-    Edit(Form),
-    AdminPrompt,
-    ServiceMenu(usize),
+    /// Back to the form with these values, if the plan failed.
+    FormOnFail { idx: Option<usize>, link: Link, install: bool },
+}
+
+enum Msg {
+    Step(usize, St),
+    Done(Result<(), String>),
+}
+
+struct Progress {
+    plan: &'static Plan,
+    states: Vec<St>,
+    rx: Receiver<Msg>,
+    result: Option<Result<(), String>>,
+    since: Instant,
+    after: After,
+    success_note: String,
+}
+
+enum Screen {
+    Welcome,
+    Form(Form),
+    Progress(Progress),
+    Main,
+}
+
+enum Overlay {
+    None,
+    Menu { sel: usize, filter: String },
+    Admin { open: String },
     ConfirmDelete(usize),
     ConfirmUninstall,
 }
 
-struct Busy {
-    what: String,
-    rx: Receiver<Result<()>>,
-    since: Instant,
+#[derive(Clone, Copy, PartialEq)]
+enum Act {
+    Add,
+    Edit,
+    Delete,
+    Install,
+    Restart,
+    Stop,
+    Start,
+    Repair,
+    Uninstall,
+    Folder,
+    Format,
+    Quit,
 }
 
 struct App {
@@ -91,18 +162,18 @@ struct App {
     traffic_com: String,
     fmt: Fmt,
     scroll: usize,
-    mode: Mode,
-    msg: String,
-    msg_err: bool,
-    busy: Option<Busy>,
+    screen: Screen,
+    overlay: Overlay,
+    msg: Option<(bool, String)>,
     quit: bool,
     last_status: Instant,
     last_svc: Instant,
     last_traffic: Instant,
 }
 
-pub fn run() -> Result<()> {
+pub fn run(open: Option<String>) -> Result<()> {
     let mut app = App::new();
+    app.screen = app.initial_screen(open.as_deref());
     let mut term = ratatui::init();
     let r = app.main_loop(&mut term);
     ratatui::restore();
@@ -112,11 +183,11 @@ pub fn run() -> Result<()> {
 fn load_config() -> (Config, Option<String>) {
     let p = paths::installed_config();
     if !p.exists() {
-        return (Config { links: vec![] }, Some("No config yet. Press A to add a scanner.".into()));
+        return (Config { links: vec![] }, None);
     }
     match Config::load(&p) {
         Ok(c) => (c, None),
-        Err(e) => (Config { links: vec![] }, Some(format!("Config has an error: {e:#}"))),
+        Err(e) => (Config { links: vec![] }, Some(format!("The config file has an error: {e:#}"))),
     }
 }
 
@@ -124,50 +195,66 @@ impl App {
     fn new() -> App {
         let (cfg, cfg_note) = load_config();
         let long_ago = Instant::now() - Duration::from_secs(60);
-        let mut app = App {
+        let svc = service::state_text();
+        App {
             admin: service::is_admin(),
             cfg,
             cfg_note,
             sel: 0,
             status: None,
-            svc: String::new(),
-            drv: String::new(),
-            installed: false,
+            installed: svc != "not installed",
+            svc,
+            drv: service::driver_state_text(),
             traffic: vec![],
             traffic_len: 0,
             traffic_com: String::new(),
             fmt: Fmt::HexText,
             scroll: 0,
-            mode: Mode::Main,
-            msg: String::new(),
-            msg_err: false,
-            busy: None,
+            screen: Screen::Main,
+            overlay: Overlay::None,
+            msg: None,
             quit: false,
             last_status: long_ago,
-            last_svc: long_ago,
+            last_svc: Instant::now(),
             last_traffic: long_ago,
-        };
-        if !app.admin {
-            app.say("View only. Changes need admin: press F2 to reopen as admin.");
         }
-        app
+    }
+
+    fn initial_screen(&mut self, open: Option<&str>) -> Screen {
+        match open {
+            Some("add") if self.admin => return Screen::Form(self.form(None)),
+            Some(o) if o.starts_with("edit:") && self.admin => {
+                let i = o[5..].parse::<usize>().unwrap_or(0);
+                if i < self.cfg.links.len() {
+                    self.sel = i;
+                    return Screen::Form(self.form(Some(i)));
+                }
+            }
+            Some("menu") => self.overlay = Overlay::Menu { sel: 0, filter: String::new() },
+            Some("setup") if self.admin => return self.setup_form(),
+            _ => {}
+        }
+        if !self.installed && open.is_none() { Screen::Welcome } else { Screen::Main }
+    }
+
+    /// The first device form of a new setup.
+    fn setup_form(&self) -> Screen {
+        Screen::Form(self.form(if self.cfg.links.is_empty() { None } else { Some(0) }))
     }
 
     fn say(&mut self, m: impl Into<String>) {
-        self.msg = m.into();
-        self.msg_err = false;
+        self.msg = Some((false, m.into()));
     }
 
     fn fail(&mut self, m: impl Into<String>) {
-        self.msg = m.into();
-        self.msg_err = true;
+        self.msg = Some((true, m.into()));
     }
 
     fn main_loop(&mut self, term: &mut DefaultTerminal) -> Result<()> {
         while !self.quit {
             self.refresh();
             term.draw(|f| self.draw(f))?;
-            if event::poll(Duration::from_millis(150))? {
+            if event::poll(Duration::from_millis(120))? {
                 if let Event::Key(k) = event::read()? {
                     if k.kind != KeyEventKind::Release {
                         self.key(k);
@@ -178,28 +265,30 @@ impl App {
         Ok(())
     }
 
-    // ---------- data ----------
+    // ---------------------------------------------------------------- data
+
+    fn reload(&mut self) {
+        let (cfg, note) = load_config();
+        self.cfg = cfg;
+        self.cfg_note = note;
+        self.sel = self.sel.min(self.cfg.links.len().saturating_sub(1));
+        self.svc = service::state_text();
+        self.drv = service::driver_state_text();
+        self.installed = self.svc != "not installed";
+        self.last_svc = Instant::now();
+        self.traffic_com.clear();
+    }
 
     fn refresh(&mut self) {
-        if let Some(b) = &self.busy {
-            if let Ok(r) = b.rx.try_recv() {
-                let what = b.what.clone();
-                self.busy = None;
-                match r {
-                    Ok(()) => {
-                        let last = crate::logger::recent().last().cloned().unwrap_or_default();
-                        self.say(format!("{what}: done. {last}"));
-                    }
-                    Err(e) => self.fail(format!("{what} failed: {e:#}")),
+        if let Screen::Progress(p) = &mut self.screen {
+            while let Ok(m) = p.rx.try_recv() {
+                match m {
+                    Msg::Step(i, s) => p.states[i] = s,
+                    Msg::Done(r) => p.result = Some(r),
                 }
-                let (cfg, note) = load_config();
-                self.cfg = cfg;
-                self.cfg_note = note;
-                self.sel = self.sel.min(self.cfg.links.len().saturating_sub(1));
-                self.last_svc = Instant::now() - Duration::from_secs(60);
             }
         }
-        if let Mode::Edit(f) = &mut self.mode {
+        if let Screen::Form(f) = &mut self.screen {
             if let Some(rx) = &f.test {
                 if let Ok(m) = rx.try_recv() {
                     f.test_msg = Some(m);
@@ -242,67 +331,232 @@ impl App {
         st.links.iter().find(|s| s.com == l.com)
     }
 
-    fn start_busy(&mut self, what: &str, job: impl FnOnce() -> Result<()> + Send + 'static) {
+    fn start_plan(
+        &mut self,
+        plan: &'static Plan,
+        after: After,
+        success_note: String,
+        job: impl FnOnce(setup::Rep) -> Result<()> + Send + 'static,
+    ) {
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            let _ = tx.send(job());
+            let tx2 = tx.clone();
+            let mut rep = move |i: usize, s: St| {
+                let _ = tx2.send(Msg::Step(i, s));
+            };
+            let r = job(&mut rep).map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::Done(r));
         });
-        self.busy = Some(Busy { what: what.to_string(), rx, since: Instant::now() });
-        self.mode = Mode::Main;
+        self.overlay = Overlay::None;
+        self.screen = Screen::Progress(Progress {
+            plan,
+            states: vec![St::Pending; plan.steps.len()],
+            rx,
+            result: None,
+            since: Instant::now(),
+            after,
+            success_note,
+        });
     }
 
-    fn apply(&mut self, what: &str, new: Config) {
-        self.start_busy(what, move || crate::apply_config(&new));
-    }
-
-    // ---------- keys ----------
-
-    fn needs_admin(&mut self) -> bool {
-        if self.admin {
-            return false;
-        }
-        self.mode = Mode::AdminPrompt;
-        true
-    }
+    // ---------------------------------------------------------------- keys
 
     fn key(&mut self, k: KeyEvent) {
-        if self.busy.is_some() {
+        let ctrl_c = k.code == KeyCode::Char('c') && k.modifiers.contains(event::KeyModifiers::CONTROL);
+        match std::mem::replace(&mut self.screen, Screen::Main) {
+            Screen::Welcome => self.key_welcome(k),
+            Screen::Form(f) => self.key_form(f, k),
+            Screen::Progress(p) => self.key_progress(p, k),
+            Screen::Main => {
+                if ctrl_c {
+                    self.quit = true;
+                } else {
+                    self.key_main(k);
+                }
+            }
+        }
+    }
+
+    fn key_welcome(&mut self, k: KeyEvent) {
+        match k.code {
+            KeyCode::Enter if self.admin => self.screen = self.setup_form(),
+            KeyCode::Enter => match setup::relaunch_as_admin("setup") {
+                Ok(()) => self.quit = true,
+                Err(e) => {
+                    self.fail(format!("{e:#}"));
+                    self.screen = Screen::Welcome;
+                }
+            },
+            KeyCode::Esc | KeyCode::Char('q') => self.quit = true,
+            _ => self.screen = Screen::Welcome,
+        }
+    }
+
+    fn key_progress(&mut self, p: Progress, k: KeyEvent) {
+        let Some(result) = &p.result else {
+            self.screen = Screen::Progress(p); // still working: ignore keys
+            return;
+        };
+        if !matches!(k.code, KeyCode::Enter | KeyCode::Esc) {
+            self.screen = Screen::Progress(p);
             return;
         }
-        match std::mem::replace(&mut self.mode, Mode::Main) {
-            Mode::Main => self.key_main(k),
-            Mode::Edit(f) => self.key_edit(f, k),
-            Mode::AdminPrompt => match k.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => match crate::relaunch_as_admin() {
-                    Ok(()) => self.quit = true,
-                    Err(e) => self.fail(format!("Still view only: {e:#}")),
-                },
-                _ => self.say("Still view only."),
-            },
-            Mode::ConfirmDelete(i) => {
-                if matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-                    let mut new = self.cfg.clone();
-                    new.links.remove(i);
-                    self.apply("Delete", new);
+        self.reload();
+        match (result, p.after) {
+            (Err(e), After::FormOnFail { idx, link, install }) => {
+                let mut f = self.form(idx);
+                f.fields = [link.name.clone(), host_of(&link.tcp), port_of(&link.tcp), link.com.clone()];
+                f.install = install && !self.installed;
+                f.err = Some(e.clone());
+                self.screen = Screen::Form(f);
+            }
+            (Err(e), _) => {
+                self.fail(format!("{} stopped: {e}", p.plan.title));
+                self.screen = Screen::Main;
+            }
+            (Ok(()), _) => {
+                self.say(format!("{}: done.", p.plan.title));
+                self.screen = Screen::Main;
+            }
+        }
+    }
+
+    fn menu_items(&self) -> Vec<(Act, String, &'static str, bool)> {
+        // (action, label, key hint, needs admin)
+        let mut v = vec![(Act::Add, "Add a device".to_string(), "A", true)];
+        if !self.cfg.links.is_empty() {
+            v.push((Act::Edit, "Edit this device".into(), "Enter", true));
+            v.push((Act::Delete, "Delete this device".into(), "D", true));
+        }
+        if !self.installed {
+            v.push((Act::Install, "Install ComTap".into(), "", true));
+        } else {
+            v.push((Act::Restart, "Restart the service".into(), "", true));
+            if self.svc == "Running" {
+                v.push((Act::Stop, "Stop the service".into(), "", true));
+            } else {
+                v.push((Act::Start, "Start the service".into(), "", true));
+            }
+            v.push((Act::Repair, "Repair virtual COM ports".into(), "", true));
+            v.push((Act::Install, "Reinstall / update ComTap".into(), "", true));
+            v.push((Act::Uninstall, "Uninstall ComTap".into(), "", true));
+        }
+        v.push((Act::Folder, "Open the log folder".into(), "L", false));
+        v.push((Act::Format, format!("Traffic format: {}", self.fmt.name()), "F8", false));
+        v.push((Act::Quit, "Quit".into(), "Q", false));
+        v
+    }
+
+    fn filtered_menu(&self, filter: &str) -> Vec<(Act, String, &'static str, bool)> {
+        let f = filter.to_lowercase();
+        self.menu_items().into_iter().filter(|i| i.1.to_lowercase().contains(&f)).collect()
+    }
+
+    fn open_name(&self, act: Act) -> String {
+        match act {
+            Act::Add => "add".into(),
+            Act::Edit => format!("edit:{}", self.sel),
+            _ => "menu".into(),
+        }
+    }
+
+    fn run_act(&mut self, act: Act, needs_admin: bool) {
+        if needs_admin && !self.admin {
+            self.overlay = Overlay::Admin { open: self.open_name(act) };
+            return;
+        }
+        self.overlay = Overlay::None;
+        match act {
+            Act::Add => self.screen = Screen::Form(self.form(None)),
+            Act::Edit if !self.cfg.links.is_empty() => self.screen = Screen::Form(self.form(Some(self.sel))),
+            Act::Delete if !self.cfg.links.is_empty() => self.overlay = Overlay::ConfirmDelete(self.sel),
+            Act::Install => {
+                if self.cfg.links.is_empty() {
+                    self.screen = Screen::Form(self.form(None));
                 } else {
-                    self.say("Not deleted.");
+                    let cfg = self.cfg.clone();
+                    let note = ports_note(&cfg.links);
+                    self.start_plan(&setup::INSTALL, After::Main, note, move |r| setup::install(&cfg, r));
                 }
             }
-            Mode::ConfirmUninstall => {
-                if matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-                    self.start_busy("Uninstall", || crate::uninstall(false, false));
-                } else {
-                    self.say("Not uninstalled.");
-                }
+            Act::Restart | Act::Start => self.start_plan(&setup::RESTART, After::Main, String::new(), setup::restart),
+            Act::Stop => self.start_plan(&setup::STOP, After::Main, String::new(), setup::stop),
+            Act::Repair => self.start_plan(&setup::REPAIR, After::Main, String::new(), setup::repair),
+            Act::Uninstall => self.overlay = Overlay::ConfirmUninstall,
+            Act::Folder => {
+                let _ = std::process::Command::new("explorer").arg(paths::data_dir()).spawn();
             }
-            Mode::ServiceMenu(i) => self.key_service_menu(i, k),
+            Act::Format => self.fmt = self.fmt.next(),
+            Act::Quit => self.quit = true,
+            _ => {}
         }
     }
 
     fn key_main(&mut self, k: KeyEvent) {
+        match std::mem::replace(&mut self.overlay, Overlay::None) {
+            Overlay::None => {}
+            Overlay::Menu { sel, mut filter } => {
+                let items = self.filtered_menu(&filter);
+                match k.code {
+                    KeyCode::Esc | KeyCode::F(1) => {}
+                    KeyCode::Up => self.overlay = Overlay::Menu { sel: sel.saturating_sub(1), filter },
+                    KeyCode::Down => {
+                        self.overlay = Overlay::Menu { sel: (sel + 1).min(items.len().saturating_sub(1)), filter }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(i) = items.get(sel) {
+                            self.run_act(i.0, i.3);
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right if items.get(sel).is_some_and(|i| i.0 == Act::Format) => {
+                        self.fmt = self.fmt.next();
+                        self.overlay = Overlay::Menu { sel, filter };
+                    }
+                    KeyCode::Backspace => {
+                        filter.pop();
+                        self.overlay = Overlay::Menu { sel: 0, filter };
+                    }
+                    KeyCode::Char(c) => {
+                        filter.push(c);
+                        self.overlay = Overlay::Menu { sel: 0, filter };
+                    }
+                    _ => self.overlay = Overlay::Menu { sel, filter },
+                }
+                return;
+            }
+            Overlay::Admin { open } => {
+                if k.code == KeyCode::Enter {
+                    match setup::relaunch_as_admin(&open) {
+                        Ok(()) => self.quit = true,
+                        Err(e) => self.fail(format!("{e:#}. Still view only.")),
+                    }
+                }
+                return;
+            }
+            Overlay::ConfirmDelete(i) => {
+                if k.code == KeyCode::Enter {
+                    let mut new = self.cfg.clone();
+                    let gone = new.links.remove(i);
+                    self.sel = self.sel.saturating_sub(1);
+                    let note = format!("{} ({}) deleted.", gone.name, gone.com);
+                    self.start_plan(&setup::APPLY, After::Main, note, move |r| setup::apply(&new, r));
+                }
+                return;
+            }
+            Overlay::ConfirmUninstall => {
+                if k.code == KeyCode::Enter {
+                    self.start_plan(&setup::UNINSTALL, After::Main, String::new(), |r| setup::uninstall(false, false, r));
+                }
+                return;
+            }
+        }
         let n = self.cfg.links.len();
         match k.code {
             KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => self.quit = true,
+            KeyCode::F(1) | KeyCode::Char('s') | KeyCode::Char('S') => {
+                self.overlay = Overlay::Menu { sel: 0, filter: String::new() }
+            }
+            KeyCode::F(2) if !self.admin => self.overlay = Overlay::Admin { open: "menu".into() },
             KeyCode::Up if self.sel > 0 => {
                 self.sel -= 1;
                 self.scroll = 0;
@@ -311,109 +565,55 @@ impl App {
                 self.sel += 1;
                 self.scroll = 0;
             }
-            KeyCode::F(2) if !self.admin => self.mode = Mode::AdminPrompt,
             KeyCode::F(8) => self.fmt = self.fmt.next(),
             KeyCode::PageUp => self.scroll += 10,
             KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
             KeyCode::End => self.scroll = 0,
             KeyCode::Home => self.scroll = usize::MAX / 2,
-            KeyCode::Char('l') | KeyCode::Char('L') => {
-                let _ = std::process::Command::new("explorer").arg(paths::data_dir()).spawn();
-            }
-            KeyCode::Enter if n > 0 => {
-                if !self.needs_admin() {
-                    self.mode = Mode::Edit(self.form(Some(self.sel)));
-                }
-            }
-            KeyCode::Char('a') | KeyCode::Char('A') => {
-                if !self.needs_admin() {
-                    self.mode = Mode::Edit(self.form(None));
-                }
-            }
-            KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete if n > 0 => {
-                if !self.needs_admin() {
-                    self.mode = Mode::ConfirmDelete(self.sel);
-                }
-            }
-            KeyCode::Char('s') | KeyCode::Char('S') => {
-                if !self.needs_admin() {
-                    self.mode = Mode::ServiceMenu(0);
-                }
-            }
+            KeyCode::Char('l') | KeyCode::Char('L') => self.run_act(Act::Folder, false),
+            KeyCode::Enter => self.run_act(if n == 0 { Act::Add } else { Act::Edit }, true),
+            KeyCode::Char('a') | KeyCode::Char('A') => self.run_act(Act::Add, true),
+            KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete if n > 0 => self.run_act(Act::Delete, true),
             _ => {}
-        }
-    }
-
-    fn service_items(&self) -> Vec<&'static str> {
-        if !self.installed {
-            vec!["Install (com0com, ports, service, desktop shortcut)"]
-        } else {
-            let run = if self.svc == "Running" { "Stop service" } else { "Start service" };
-            vec!["Restart service", run, "Repair virtual ports", "Reinstall / update exe", "Uninstall"]
-        }
-    }
-
-    fn key_service_menu(&mut self, i: usize, k: KeyEvent) {
-        let items = self.service_items();
-        match k.code {
-            KeyCode::Up => self.mode = Mode::ServiceMenu(i.saturating_sub(1)),
-            KeyCode::Down => self.mode = Mode::ServiceMenu((i + 1).min(items.len() - 1)),
-            KeyCode::Enter => {
-                let item = items[i];
-                let cfg_path = paths::installed_config();
-                match item {
-                    _ if item.starts_with("Install") || item.starts_with("Reinstall") => {
-                        if self.cfg.links.is_empty() {
-                            self.fail("Add a scanner first (A).");
-                        } else {
-                            self.start_busy("Install", move || crate::install(Some(cfg_path)));
-                        }
-                    }
-                    "Restart service" => self.start_busy("Restart", crate::restart),
-                    "Stop service" => self.start_busy("Stop", service::stop),
-                    "Start service" => self.start_busy("Start", service::start),
-                    "Repair virtual ports" => {
-                        let links = self.cfg.links.clone();
-                        self.start_busy("Repair ports", move || {
-                            com0com::reconcile(&com0com::Setupc::find()?, &links).map(|_| ())
-                        });
-                    }
-                    "Uninstall" => self.mode = Mode::ConfirmUninstall,
-                    _ => {}
-                }
-            }
-            KeyCode::Esc => {}
-            _ => self.mode = Mode::ServiceMenu(i),
         }
     }
 
     fn form(&self, idx: Option<usize>) -> Form {
         let (name, host, port, com) = match idx.and_then(|i| self.cfg.links.get(i)) {
-            Some(l) => {
-                let (h, p) = l.tcp.rsplit_once(':').unwrap_or((&l.tcp, ""));
-                (l.name.clone(), h.to_string(), p.to_string(), l.com.clone())
-            }
-            None => (format!("Scanner {}", self.cfg.links.len() + 1), String::new(), "51236".into(), String::new()),
+            Some(l) => (l.name.clone(), host_of(&l.tcp), port_of(&l.tcp), l.com.clone()),
+            None => (format!("Device {}", self.cfg.links.len() + 1), String::new(), String::new(), String::new()),
         };
-        // COM ports offered: this link's own, plus any not used by Windows or another link.
-        let in_use: Vec<String> = serialport::available_ports()
-            .map(|v| v.into_iter().map(|p| p.port_name.to_ascii_uppercase()).collect())
-            .unwrap_or_default();
-        let mut coms: Vec<String> = (1..=64)
-            .map(|n| format!("COM{n}"))
-            .filter(|c| *c == com || (!in_use.contains(c) && !self.cfg.links.iter().any(|l| &l.com == c)))
-            .collect();
+        let taken: Vec<String> =
+            self.cfg.links.iter().enumerate().filter(|(i, _)| Some(*i) != idx).map(|(_, l)| l.com.clone()).collect();
+        let mut coms = com0com::free_ports(&taken, 40);
+        // A device's own port is reserved by its own pair, so add it back.
         if !com.is_empty() && !coms.contains(&com) {
             coms.insert(0, com.clone());
         }
-        let com = if com.is_empty() { coms.first().cloned().unwrap_or_else(|| "COM5".into()) } else { com };
-        Form { idx, fields: [name, host, port, com], focus: if idx.is_none() { F_HOST } else { F_NAME }, coms, err: None, test: None, test_msg: None }
+        let com = if com.is_empty() { coms.first().cloned().unwrap_or_default() } else { com };
+        Form {
+            idx,
+            fields: [name, host, port, com],
+            focus: if idx.is_none() { F_HOST } else { F_NAME },
+            coms,
+            install: !self.installed,
+            err: None,
+            test: None,
+            test_msg: None,
+        }
     }
 
-    fn key_edit(&mut self, mut f: Form, k: KeyEvent) {
+    fn key_form(&mut self, mut f: Form, k: KeyEvent) {
+        let back = |app: &mut App| {
+            if app.installed || !app.cfg.links.is_empty() {
+                app.screen = Screen::Main;
+            } else {
+                app.screen = Screen::Welcome;
+            }
+        };
         match k.code {
             KeyCode::Esc => {
-                self.say("Not saved.");
+                back(self);
                 return;
             }
             KeyCode::Up | KeyCode::BackTab => f.focus = (f.focus + 3) % 4,
@@ -424,18 +624,18 @@ impl App {
                 let next = if k.code == KeyCode::Right { (pos + 1) % n } else { (pos + n - 1) % n };
                 f.fields[F_COM] = f.coms[next].clone();
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if f.focus != F_COM => {
                 f.fields[f.focus].pop();
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char(c) if f.focus != F_COM => {
                 let ok = match f.focus {
-                    F_PORT => c.is_ascii_digit(),
+                    F_PORT => c.is_ascii_digit() && f.fields[F_PORT].len() < 5,
                     F_HOST => !c.is_whitespace(),
-                    F_COM => c.is_ascii_alphanumeric(),
                     _ => true,
                 };
                 if ok {
                     f.fields[f.focus].push(c);
+                    f.test_msg = None;
                 }
             }
             KeyCode::F(5) => {
@@ -445,301 +645,494 @@ impl App {
                     let _ = tx.send(test_connect(&addr));
                 });
                 f.test = Some(rx);
-                f.test_msg = Some("Testing...".into());
+                f.test_msg = None;
             }
             KeyCode::Enter => {
-                let link = Link {
-                    name: f.fields[F_NAME].trim().to_string(),
-                    tcp: format!("{}:{}", f.fields[F_HOST].trim(), f.fields[F_PORT].trim()),
-                    com: f.fields[F_COM].trim().to_string(),
-                };
-                let mut new = self.cfg.clone();
-                match f.idx {
-                    Some(i) => new.links[i] = link,
-                    None => new.links.push(link),
-                }
-                match new.validate() {
-                    Ok(()) => {
-                        if f.idx.is_none() {
-                            self.sel = new.links.len() - 1;
-                        }
-                        let what = if self.installed { "Save and apply" } else { "Save" };
-                        self.apply(what, new);
-                        return;
+                if f.fields[F_HOST].trim().is_empty() {
+                    f.err = Some("Enter the device's IP address.".into());
+                    f.focus = F_HOST;
+                } else if f.fields[F_PORT].trim().is_empty() {
+                    f.err = Some("Enter the device's TCP port.".into());
+                    f.focus = F_PORT;
+                } else if f.fields[F_COM].is_empty() {
+                    f.err = Some("No free COM port found.".into());
+                } else {
+                    let link = Link {
+                        name: if f.fields[F_NAME].trim().is_empty() {
+                            "Device".into()
+                        } else {
+                            f.fields[F_NAME].trim().to_string()
+                        },
+                        tcp: format!("{}:{}", f.fields[F_HOST].trim(), f.fields[F_PORT].trim()),
+                        com: f.fields[F_COM].clone(),
+                    };
+                    let mut new = self.cfg.clone();
+                    match f.idx {
+                        Some(i) => new.links[i] = link.clone(),
+                        None => new.links.push(link.clone()),
                     }
-                    Err(e) => f.err = Some(format!("{e:#}")),
+                    match new.validate() {
+                        Ok(()) => {
+                            if f.idx.is_none() {
+                                self.sel = new.links.len() - 1;
+                            }
+                            let after = After::FormOnFail { idx: f.idx, link, install: f.install };
+                            let note = ports_note(&new.links);
+                            if f.install {
+                                self.start_plan(&setup::INSTALL, after, note, move |r| setup::install(&new, r));
+                            } else {
+                                self.start_plan(&setup::APPLY, after, note, move |r| setup::apply(&new, r));
+                            }
+                            return;
+                        }
+                        Err(e) => f.err = Some(format!("{e:#}")),
+                    }
                 }
             }
             _ => {}
         }
-        self.mode = Mode::Edit(f);
+        self.screen = Screen::Form(f);
     }
 
-    // ---------- drawing ----------
+    // ---------------------------------------------------------------- drawing
 
     fn draw(&self, fr: &mut Frame) {
-        let links_h = (self.cfg.links.len().max(1) as u16 + 3).min(12);
-        let [head, svc, links, tr, msg, foot] = Layout::vertical([
+        match &self.screen {
+            Screen::Welcome => self.draw_welcome(fr),
+            Screen::Form(f) => self.draw_form(fr, f),
+            Screen::Progress(p) => self.draw_progress(fr, p),
+            Screen::Main => self.draw_main(fr),
+        }
+    }
+
+    fn draw_welcome(&self, fr: &mut Frame) {
+        let mut lines: Vec<Line> = vec![
+            "".into(),
+            "   ComTap makes a network (TCP) device show up as a COM port, so".into(),
+            "   software that only talks serial can read it.".into(),
+            "".into(),
+            "   Setting up takes three steps:".into(),
+            Line::from(vec![Span::styled("     1  ", Style::new().fg(ACCENT)), "Enter the device's IP address and TCP port".into()]),
+            Line::from(vec![Span::styled("     2  ", Style::new().fg(ACCENT)), "Pick the COM port your software will open".into()]),
+            Line::from(vec![
+                Span::styled("     3  ", Style::new().fg(ACCENT)),
+                "Install. ComTap then runs in the background and starts with Windows.".into(),
+            ]),
+            "".into(),
+        ];
+        if self.admin {
+            lines.push(Line::from(vec![
+                "   Press ".into(),
+                badge("Enter", Color::Green),
+                " to start".into(),
+            ]));
+        } else {
+            lines.push("   Setting up needs administrator rights.".into());
+            lines.push("".into());
+            lines.push(Line::from(vec![
+                "   Press ".into(),
+                badge("Enter", Color::Green),
+                " to continue. Windows asks for permission (UAC).".into(),
+            ]));
+        }
+        if let Some((true, m)) = &self.msg {
+            lines.push("".into());
+            lines.push(Line::from(Span::styled(format!("   {m}"), Style::new().fg(Color::LightRed))));
+        }
+        let h = lines.len() as u16 + 3;
+        let area = top_box(fr.area(), 80, h);
+        fr.render_widget(Clear, area);
+        let block = Block::bordered()
+            .title(title("TCP device to COM port"))
+            .title_bottom(hints("Enter continue  Esc quit"))
+            .border_style(Style::new().fg(ACCENT));
+        fr.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), area);
+    }
+
+    fn draw_form(&self, fr: &mut Frame, f: &Form) {
+        let heading = match (f.install, f.idx) {
+            (true, _) => "Set up a device",
+            (false, None) => "Add a device",
+            (false, Some(_)) => "Edit device",
+        };
+        let action = if f.install {
+            format!(" to install ComTap and create {}", f.fields[F_COM])
+        } else {
+            " to save and apply".into()
+        };
+        // Lay out with the full height first, then shrink the box to fit the lines.
+        let inner_w = 80.min(fr.area().width).saturating_sub(2);
+
+        let mut lines: Vec<Line> = vec!["".into()];
+        let mut cursor = None;
+        for (i, label) in LABELS.iter().enumerate() {
+            let focused = i == f.focus;
+            let label_style =
+                if focused { Style::new().fg(ACCENT).add_modifier(Modifier::BOLD) } else { Style::new() };
+            let val_style =
+                if focused { Style::new().fg(Color::Black).bg(ACCENT) } else { Style::new().fg(Color::White) };
+            let mut spans = vec![
+                Span::styled(if focused { format!(" {MARK} ") } else { "   ".into() }, Style::new().fg(ACCENT)),
+                Span::styled(format!("{label:<14}"), label_style),
+            ];
+            let value = &f.fields[i];
+            if i == F_COM {
+                if focused {
+                    spans.push(Span::styled(format!("{LEFT} "), DIM));
+                }
+                let shown = if value.is_empty() { "none free".to_string() } else { value.clone() };
+                spans.push(Span::styled(format!(" {shown} "), val_style));
+                if focused {
+                    spans.push(Span::styled(format!(" {MARK}"), DIM));
+                }
+                spans.push(Span::styled(format!("  {} free", f.coms.len()), DIM));
+            } else {
+                let shown = if value.is_empty() && !focused {
+                    match i {
+                        F_HOST => "e.g. 192.168.1.50".to_string(),
+                        F_PORT => "e.g. 51236".to_string(),
+                        _ => String::new(),
+                    }
+                } else {
+                    value.clone()
+                };
+                let style = if value.is_empty() && !focused { DIM } else { val_style };
+                spans.push(Span::styled(format!(" {shown} "), style));
+                if focused {
+                    // (column, row) inside the box; placed once the box is sized.
+                    cursor = Some((3 + 14 + 1 + value.chars().count() as u16, lines.len() as u16));
+                }
+            }
+            lines.push(Line::from(spans));
+        }
+        lines.push("".into());
+        lines.push(Line::from(Span::styled(format!("   {}", "─".repeat(inner_w.saturating_sub(6) as usize)), DIM)));
+        let mut rows = wrap_words(HELP[f.focus], inner_w.saturating_sub(6) as usize);
+        rows.resize(2, String::new());
+        for r in rows.into_iter().take(2) {
+            lines.push(Line::from(Span::styled(format!("   {r}"), Style::new().fg(Color::Gray))));
+        }
+        lines.push("".into());
+        lines.push(match (&f.test, &f.test_msg) {
+            (Some(_), _) => Line::from(Span::styled("   Testing the connection…", Style::new().fg(Color::Yellow))),
+            (None, Some((true, m))) => Line::from(Span::styled(format!("   {OK} {m}"), Style::new().fg(Color::Green))),
+            (None, Some((false, m))) => {
+                Line::from(Span::styled(format!("   {BAD} {m}"), Style::new().fg(Color::LightRed)))
+            }
+            (None, None) => Line::from(Span::styled("   Press F5 to test the connection to the device.", DIM)),
+        });
+        if matches!(&f.test_msg, Some((false, _))) && self.svc == "Running" {
+            lines.push(Line::from(Span::styled(
+                "   (Some devices accept only one connection. If ComTap is connected, a test can fail.)",
+                DIM,
+            )));
+        }
+        lines.push("".into());
+        lines.push(Line::from(vec!["   Press ".into(), badge("Enter", Color::Green), action.into()]));
+        if let Some(e) = &f.err {
+            lines.push("".into());
+            for r in wrap_words(e, inner_w.saturating_sub(6) as usize) {
+                lines.push(Line::from(Span::styled(format!("   {r}"), Style::new().fg(Color::LightRed))));
+            }
+        }
+        lines.push("".into());
+        let area = top_box(fr.area(), 80, lines.len() as u16 + 2);
+        fr.render_widget(Clear, area);
+        let block = Block::bordered()
+            .title(title(heading))
+            .title_bottom(hints("↑↓ move  ←→ change  type to edit  F5 test  Enter save  Esc back"))
+            .border_style(Style::new().fg(ACCENT));
+        fr.render_widget(Paragraph::new(lines).block(block), area);
+        if let Some((cx, cy)) = cursor.filter(|c| c.1 + 2 < area.height) {
+            fr.set_cursor_position((area.x + 1 + cx, area.y + 1 + cy));
+        }
+    }
+
+    fn draw_progress(&self, fr: &mut Frame, p: &Progress) {
+        let w = 84.min(fr.area().width);
+        let text_w = w.saturating_sub(12) as usize;
+        let mut lines: Vec<Line> = vec!["".into()];
+        let spin = SPIN[(p.since.elapsed().as_millis() / 150) as usize % 4];
+        for (i, name) in p.plan.steps.iter().enumerate() {
+            let (icon, icon_style, name_style, detail, detail_style) = match &p.states[i] {
+                St::Pending => (" ", DIM, DIM, "", DIM),
+                St::Running => (spin, Style::new().fg(Color::Yellow), Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD), "", DIM),
+                St::Done(d) => (OK, Style::new().fg(Color::Green), Style::new(), d.as_str(), DIM),
+                St::Warn(d) => ("!", Style::new().fg(Color::Yellow), Style::new().fg(Color::Yellow), d.as_str(), Style::new().fg(Color::Yellow)),
+                St::Skip(d) => ("-", DIM, DIM, d.as_str(), DIM),
+                St::Fail(d) => (BAD, Style::new().fg(Color::LightRed), Style::new().fg(Color::LightRed), d.as_str(), Style::new().fg(Color::LightRed)),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("   {icon}  "), icon_style.add_modifier(Modifier::BOLD)),
+                Span::styled(name.to_string(), name_style),
+            ]));
+            if !detail.is_empty() {
+                for r in wrap_words(detail, text_w) {
+                    lines.push(Line::from(Span::styled(format!("      {r}"), detail_style)));
+                }
+            }
+            if matches!(p.states[i], St::Running) && name.starts_with("Create the virtual") {
+                let hint = "The first time, Windows can ask to install the com0com driver: click Install.";
+                for r in wrap_words(hint, text_w) {
+                    lines.push(Line::from(Span::styled(format!("      {r}"), Style::new().fg(Color::Yellow))));
+                }
+            }
+        }
+        lines.push("".into());
+        match &p.result {
+            None => lines.push(Line::from(Span::styled("   Working, please wait…", Style::new().fg(Color::Yellow)))),
+            Some(Ok(())) => {
+                lines.push(Line::from(Span::styled(
+                    "   Done.",
+                    Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+                )));
+                if !p.success_note.is_empty() {
+                    lines.push(Line::from(Span::styled(format!("   {}", p.success_note), Style::new().fg(Color::Green))));
+                }
+                lines.push("".into());
+                lines.push(Line::from(vec!["   Press ".into(), badge("Enter", Color::Green), " to continue".into()]));
+            }
+            Some(Err(_)) => {
+                lines.push(Line::from(Span::styled(
+                    "   Stopped at the step marked ×. Nothing after it was done.",
+                    Style::new().fg(Color::LightRed).add_modifier(Modifier::BOLD),
+                )));
+                lines.push("".into());
+                let back = if matches!(p.after, After::FormOnFail { .. }) { " to go back and fix it" } else { " to go back" };
+                lines.push(Line::from(vec!["   Press ".into(), badge("Enter", Color::Green), back.into()]));
+            }
+        }
+        let area = top_box(fr.area(), w, lines.len() as u16 + 2);
+        fr.render_widget(Clear, area);
+        let block = Block::bordered()
+            .title(title(p.plan.title))
+            .title_bottom(hints(if p.result.is_some() { "Enter continue" } else { "please wait" }))
+            .border_style(Style::new().fg(ACCENT));
+        fr.render_widget(Paragraph::new(lines).block(block), area);
+    }
+
+    fn draw_main(&self, fr: &mut Frame) {
+        let rows = self.cfg.links.len().max(1) as u16 + 3;
+        let [head, devs, tr, msg, foot] = Layout::vertical([
             Constraint::Length(1),
-            Constraint::Length(4),
-            Constraint::Length(links_h),
-            Constraint::Min(5),
+            Constraint::Length(rows.min(12)),
+            Constraint::Min(4),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .areas(fr.area());
 
-        // Header
-        let right = if self.admin {
-            Span::styled(" ADMIN ", Style::new().fg(Color::Black).bg(Color::Green))
-        } else {
-            Span::styled(" VIEW ONLY · F2 admin ", Style::new().fg(Color::Black).bg(Color::Yellow))
+        // Header, like RawTap's: name badge, state badge, details.
+        let (state, bg, fg) = match self.svc.as_str() {
+            "Running" => ("● SERVICE RUNNING", Color::Green, Color::Black),
+            "not installed" => ("NOT INSTALLED", Color::Yellow, Color::Black),
+            _ => ("○ SERVICE STOPPED", Color::Red, Color::White),
         };
-        let title = format!(" ComTap {}  TCP devices as COM ports", env!("CARGO_PKG_VERSION"));
-        let [hl, hr] =
-            Layout::horizontal([Constraint::Min(10), Constraint::Length(right.width() as u16)]).areas(head);
-        fr.render_widget(Paragraph::new(title.bold()), hl);
-        fr.render_widget(Paragraph::new(Line::from(right)), hr);
-
-        // Service + driver
-        let dot = |s: &str| {
-            let c = match s {
-                "Running" => Color::Green,
-                "not installed" => Color::Yellow,
-                _ => Color::Red,
-            };
-            Span::styled("● ", Style::new().fg(c))
-        };
-        let files = if com0com::has_embedded() {
-            "files inside exe".to_string()
-        } else if com0com::locate().is_ok() {
-            "files found".to_string()
-        } else {
-            "files MISSING (see vendor/com0com/README.md)".to_string()
-        };
-        let svc_lines = vec![
-            Line::from(vec![
-                "Service  ".into(),
-                dot(&self.svc),
-                self.svc.clone().into(),
-                if self.installed { "  · starts on boot".dark_gray() } else { "  · press S to install".dark_gray() },
-            ]),
-            Line::from(vec!["Driver   ".into(), dot(&self.drv), format!("com0com {}  · {files}", self.drv).into()]),
+        let mut spans = vec![
+            badge("ComTap", ACCENT),
+            Span::raw(" "),
+            Span::styled(format!(" {state} "), Style::new().fg(fg).bg(bg)),
+            Span::styled(format!("  driver com0com {}", self.drv), DIM),
         ];
-        fr.render_widget(Paragraph::new(svc_lines).block(Block::bordered().title(" Status ")), svc);
+        let right = if self.admin { badge("ADMIN", Color::Green) } else { badge("VIEW ONLY · F2 admin", Color::Yellow) };
+        let used: usize = spans.iter().map(|s| s.width()).sum();
+        let gap = (head.width as usize).saturating_sub(used + right.width());
+        spans.push(Span::raw(" ".repeat(gap)));
+        spans.push(right);
+        fr.render_widget(Paragraph::new(Line::from(spans)), head);
 
-        // Links
-        let mut rows = Vec::new();
-        if self.cfg.links.is_empty() {
-            rows.push(Line::from(self.cfg_note.clone().unwrap_or_else(|| "No scanners yet. Press A to add one.".into())).yellow());
+        // Devices
+        let mut lines: Vec<Line> = Vec::new();
+        if let Some(n) = &self.cfg_note {
+            lines.push(Line::from(Span::styled(format!(" {n}"), Style::new().fg(Color::LightRed))));
+        } else if self.cfg.links.is_empty() {
+            lines.push(Line::from(Span::styled(" No devices yet. Press A to add one.", Style::new().fg(Color::Yellow))));
+        } else if !self.installed {
+            lines.push(Line::from(Span::styled(
+                " ComTap is not installed. Press F1 and choose Install.",
+                Style::new().fg(Color::Yellow),
+            )));
         }
         for (i, l) in self.cfg.links.iter().enumerate() {
             let st = self.link_status(l);
             let (state, color) = match st.map(|s| s.state.as_str()) {
                 Some("connected") => ("connected", Color::Green),
                 Some(s @ ("retrying" | "connecting" | "starting")) => (s, Color::Yellow),
-                Some(s) => (s, Color::Red),
+                Some(s) => (s, Color::LightRed),
                 None => ("service not running", Color::DarkGray),
             };
-            let last = st.and_then(|s| s.last_rx.clone()).map(|t| format!("  last data {}", &t[11..])).unwrap_or_default();
-            let marker = if i == self.sel { "▶ " } else { "  " };
-            let mut row = Line::from(vec![
-                marker.into(),
+            let selected = i == self.sel;
+            let mut spans = vec![
+                Span::styled(if selected { format!(" {MARK} ") } else { "   ".into() }, Style::new().fg(ACCENT)),
                 Span::styled("● ", Style::new().fg(color)),
-                format!("{:<18} ", trunc(&l.name, 18)).bold(),
-                format!("{:<6} ⇄ {:<22} ", l.com, l.tcp).into(),
-                Span::styled(state.to_string(), Style::new().fg(color)),
-                last.dark_gray(),
-            ]);
-            if i == self.sel {
-                row = row.style(Style::new().add_modifier(Modifier::REVERSED));
+                Span::styled(
+                    format!("{:<20}", trunc(&l.name, 20)),
+                    if selected { Style::new().fg(ACCENT).add_modifier(Modifier::BOLD) } else { Style::new() },
+                ),
+                Span::styled(format!("{:<6}", l.com), Style::new().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" {BOTH} "), DIM),
+                Span::raw(format!("{:<22} ", l.tcp)),
+                Span::styled(format!("{state:<12}"), Style::new().fg(color)),
+            ];
+            if let Some(s) = st {
+                if let Some(t) = &s.last_rx {
+                    spans.push(Span::styled(format!("  last data {}", t.get(11..).unwrap_or(t)), DIM));
+                }
             }
-            rows.push(row);
-            if i == self.sel {
+            lines.push(Line::from(spans));
+            if selected {
                 if let Some(e) = st.and_then(|s| s.last_error.clone()) {
-                    rows.push(Line::from(format!("      └ {e}")).red());
+                    lines.push(Line::from(Span::styled(format!("       {e}"), Style::new().fg(Color::LightRed))));
                 }
             }
         }
-        fr.render_widget(Paragraph::new(rows).block(Block::bordered().title(" Scanners ")), links);
+        let block = Block::bordered().title(" Devices ").border_style(Style::new().fg(ACCENT));
+        fr.render_widget(Paragraph::new(lines).block(block), devs);
 
-        // Traffic
         self.draw_traffic(fr, tr);
 
-        // Message + footer
-        let m = if let Some(b) = &self.busy {
-            let i = (b.since.elapsed().as_millis() / 150) as usize % 4;
-            Line::from(format!(" {} {}... (please wait)", SPIN[i], b.what)).cyan()
-        } else if self.msg_err {
-            Line::from(format!(" {}", self.msg)).red()
-        } else {
-            Line::from(format!(" {}", self.msg)).dark_gray()
+        let m = match &self.msg {
+            Some((true, m)) => Line::from(Span::styled(format!(" {m}"), Style::new().fg(Color::LightRed))),
+            Some((false, m)) => Line::from(Span::styled(format!(" {m}"), Style::new().fg(Color::Green))),
+            None if !self.admin => Line::from(Span::styled(" View only. Changes need admin: press F2.", DIM)),
+            None => Line::from(""),
         };
         fr.render_widget(Paragraph::new(m), msg);
-        let keys = " ↑↓ select · Enter edit · A add · D delete · S service · F8 format · PgUp/PgDn scroll · L folder · Q quit";
-        fr.render_widget(Paragraph::new(keys.reversed()), foot);
+        fr.render_widget(
+            Paragraph::new(hints("F1 menu  ↑↓ device  Enter edit  A add  D delete  F8 format  PgUp/PgDn scroll  L logs  Q quit")),
+            foot,
+        );
 
-        // Popups
-        match &self.mode {
-            Mode::Main => {}
-            Mode::Edit(f) => self.draw_form(fr, f),
-            Mode::AdminPrompt => popup(
+        match &self.overlay {
+            Overlay::None => {}
+            Overlay::Menu { sel, filter } => self.draw_menu(fr, *sel, filter),
+            Overlay::Admin { .. } => confirm(
                 fr,
                 " Needs admin ",
+                Color::Yellow,
                 vec![
-                    "Changing settings or the service needs administrator rights.".into(),
-                    "".into(),
-                    "Reopen ComTap as admin?  Y = yes (UAC prompt)   N = no".bold().into(),
+                    "This change needs administrator rights.".into(),
+                    "ComTap will reopen as admin, and Windows will ask for permission.".into(),
                 ],
+                "reopen as admin",
             ),
-            Mode::ConfirmDelete(i) => popup(
-                fr,
-                " Delete scanner ",
-                vec![
-                    format!("Delete '{}' and its port {}?", self.cfg.links[*i].name, self.cfg.links[*i].com).into(),
-                    "".into(),
-                    "Y = delete   N = keep".bold().into(),
-                ],
-            ),
-            Mode::ConfirmUninstall => popup(
-                fr,
-                " Uninstall ",
-                vec![
-                    "Remove the service, its virtual ports and the desktop shortcut?".into(),
-                    "Config, logs and the com0com driver stay.".into(),
-                    "".into(),
-                    "Y = uninstall   N = cancel".bold().into(),
-                ],
-            ),
-            Mode::ServiceMenu(sel) => {
-                let mut lines: Vec<Line> = self
-                    .service_items()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| {
-                        let l = Line::from(format!(" {s} "));
-                        if i == *sel { l.reversed() } else { l }
-                    })
-                    .collect();
-                lines.push("".into());
-                lines.push("↑↓ choose · Enter run · Esc close".dark_gray().into());
-                popup(fr, " Service ", lines);
+            Overlay::ConfirmDelete(i) => {
+                let l = &self.cfg.links[*i];
+                confirm(
+                    fr,
+                    " Delete device ",
+                    Color::Yellow,
+                    vec![format!("Delete '{}'?", l.name).into(), format!("Its virtual port {} will be removed.", l.com).into()],
+                    "delete",
+                )
             }
+            Overlay::ConfirmUninstall => confirm(
+                fr,
+                " Uninstall ComTap ",
+                Color::Yellow,
+                vec![
+                    "Remove the service, its virtual COM ports and the desktop shortcut?".into(),
+                    "Your settings, logs and the com0com driver stay.".into(),
+                ],
+                "uninstall",
+            ),
         }
+    }
+
+    fn draw_menu(&self, fr: &mut Frame, sel: usize, filter: &str) {
+        let items = self.filtered_menu(filter);
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(vec![
+            Span::styled(" Filter: ", DIM),
+            Span::styled(if filter.is_empty() { "type to search".to_string() } else { filter.to_string() }, if filter.is_empty() { DIM } else { Style::new().fg(Color::White) }),
+        ]));
+        lines.push("".into());
+        for (i, (_, label, key, admin)) in items.iter().enumerate() {
+            let focused = i == sel;
+            let lock = if *admin && !self.admin { " (admin)" } else { "" };
+            let text = format!("{label}{lock}");
+            let mut spans = vec![
+                Span::styled(if focused { format!(" {MARK} ") } else { "   ".into() }, Style::new().fg(ACCENT)),
+                Span::styled(
+                    format!("{text:<38}"),
+                    if focused { Style::new().fg(Color::Black).bg(ACCENT) } else { Style::new() },
+                ),
+            ];
+            spans.push(Span::styled(format!(" {key:>5}"), DIM));
+            lines.push(Line::from(spans));
+        }
+        if items.is_empty() {
+            lines.push(Line::from(Span::styled("   nothing matches", DIM)));
+        }
+        let area = Rect { y: fr.area().y + 2, ..top_box(fr.area(), 54, lines.len() as u16 + 2) };
+        let area = area.intersection(fr.area());
+        fr.render_widget(Clear, area);
+        let block = Block::bordered()
+            .title(title("Menu"))
+            .title_bottom(hints("↑↓ move  Enter run  ←→ change  Esc close"))
+            .border_style(Style::new().fg(ACCENT));
+        fr.render_widget(Paragraph::new(lines).block(block), area);
     }
 
     fn draw_traffic(&self, fr: &mut Frame, area: Rect) {
         let name = self.cfg.links.get(self.sel).map(|l| l.name.as_str()).unwrap_or("-");
-        let inner_w = area.width.saturating_sub(2) as usize;
+        let inner_w = area.width.saturating_sub(2);
         let inner_h = area.height.saturating_sub(2) as usize;
         let mut rows: Vec<Line> = Vec::new();
-        // Hex dump style: 16 bytes a row if there's room for the text beside it, else 8.
-        let per_row = if inner_w >= 12 + 16 * 3 + 2 + 24 { 16 } else { 8 };
         for l in &self.traffic {
-            match l {
-                traffic::Line::Event { time, msg } => {
-                    rows.push(Line::from(format!("{} -- {msg}", &time[..8])).cyan());
-                }
-                traffic::Line::Data { time, dir, bytes } => {
-                    let (tag, color) = match dir {
-                        Dir::Rx => ("RX", Color::Green),
-                        Dir::Tx => ("TX", Color::Yellow),
-                    };
-                    let head = |first: bool| {
-                        if first {
-                            vec![format!("{} ", &time[..8]).dark_gray(), Span::styled(format!("{tag} "), Style::new().fg(color))]
-                        } else {
-                            vec![Span::raw(" ".repeat(12))]
-                        }
-                    };
-                    match self.fmt {
-                        Fmt::Compact => {
-                            let hex = codec::hex_string(bytes);
-                            let hw = (inner_w.saturating_sub(12)) / 2;
-                            let mut s = head(true);
-                            s.push(format!("{:<hw$} ", trunc(&hex, hw)).into());
-                            s.push(Span::styled(codec::text_string(bytes), Style::new().fg(color)));
-                            rows.push(Line::from(s));
-                        }
-                        Fmt::Text => {
-                            let mut s = head(true);
-                            s.push(Span::styled(codec::text_string(bytes), Style::new().fg(color)));
-                            rows.push(Line::from(s));
-                        }
-                        Fmt::Hex | Fmt::HexText => {
-                            for (i, chunk) in bytes.chunks(if self.fmt == Fmt::Hex { per_row * 2 } else { per_row }).enumerate() {
-                                let mut s = head(i == 0);
-                                let hex = codec::hex_string(chunk);
-                                if self.fmt == Fmt::HexText {
-                                    s.push(format!("{:<w$}  ", hex, w = per_row * 3 - 1).into());
-                                    s.push(Span::styled(codec::text_string(chunk), Style::new().fg(color)));
-                                } else {
-                                    s.push(hex.into());
-                                }
-                                rows.push(Line::from(s));
-                            }
-                        }
-                    }
-                }
-            }
+            rows.extend(entry_lines(l, inner_w, self.fmt));
         }
         if rows.is_empty() {
-            rows.push("No traffic today yet. Scan a barcode and it appears here.".dark_gray().into());
+            rows.push(Line::from(Span::styled(
+                "No data today yet. Data from the device and from your software appears here.",
+                DIM,
+            )));
         }
         let max_scroll = rows.len().saturating_sub(inner_h);
         let scroll = self.scroll.min(max_scroll);
         let end = rows.len() - scroll;
         let start = end.saturating_sub(inner_h);
-        let pos = if scroll == 0 { "following".to_string() } else { format!("scrolled up {scroll} · End to follow") };
-        let title = format!(" {name} · traffic · {} (F8) · {pos} ", self.fmt.name());
-        let shown: Vec<Line> = rows[start..end].to_vec();
-        fr.render_widget(Paragraph::new(shown).block(Block::bordered().title(title)), area);
-    }
-
-    fn draw_form(&self, fr: &mut Frame, f: &Form) {
-        let mut lines: Vec<Line> = Vec::new();
-        for (i, label) in LABELS.iter().enumerate() {
-            let focused = i == f.focus;
-            let mut val = f.fields[i].clone();
-            if focused {
-                val.push('_');
-            }
-            let hint = if i == F_COM { "  ←→ pick a free port".dark_gray() } else { "".into() };
-            let v = if focused { Span::styled(format!(" {val:<24}"), Style::new().reversed()) } else { format!(" {val:<24}").into() };
-            lines.push(Line::from(vec![format!("{label:>18}:").into(), v, hint]));
+        let mut block = Block::bordered()
+            .title(format!(" Traffic · {name} · {} (F8) ", self.fmt.name()))
+            .border_style(Style::new().fg(ACCENT));
+        if scroll > 0 {
+            block = block.title_top(
+                Line::from(Span::styled(" scrolled · End to follow ", Style::new().fg(Color::Yellow))).right_aligned(),
+            );
         }
-        lines.push("".into());
-        if let Some(t) = &f.test_msg {
-            let l = Line::from(format!("Test: {t}"));
-            lines.push(if t.starts_with("OK") { l.green() } else if t.starts_with("Testing") { l.cyan() } else { l.red() });
-            if !t.starts_with("OK") && !t.starts_with("Testing") && self.svc == "Running" {
-                lines.push("(Some scanners allow only one connection. If ComTap is connected, a test can fail.)".dark_gray().into());
-            }
-        }
-        if let Some(e) = &f.err {
-            lines.push(Line::from(e.clone()).red());
-        }
-        lines.push("".into());
-        lines.push("Tab/↑↓ field · F5 test connection · Enter save · Esc cancel".dark_gray().into());
-        let title = if f.idx.is_some() { " Edit scanner " } else { " Add scanner " };
-        popup(fr, title, lines);
+        fr.render_widget(Paragraph::new(rows[start..end].to_vec()).block(block), area);
     }
 }
 
-fn test_connect(addr: &str) -> String {
+// ---------------------------------------------------------------- helpers
+
+fn ports_note(links: &[Link]) -> String {
+    let ports: Vec<&str> = links.iter().map(|l| l.com.as_str()).collect();
+    format!("Your software can now open {}.", ports.join(", "))
+}
+
+fn host_of(tcp: &str) -> String {
+    tcp.rsplit_once(':').map(|(h, _)| h).unwrap_or(tcp).to_string()
+}
+
+fn port_of(tcp: &str) -> String {
+    tcp.rsplit_once(':').map(|(_, p)| p).unwrap_or("").to_string()
+}
+
+fn test_connect(addr: &str) -> (bool, String) {
     let t0 = Instant::now();
     let addrs = match addr.to_socket_addrs() {
         Ok(a) => a.collect::<Vec<_>>(),
-        Err(e) => return format!("cannot resolve {addr}: {e}"),
+        Err(e) => return (false, format!("Cannot find {addr}: {e}")),
     };
-    let mut last = format!("{addr} did not resolve");
+    let mut last = format!("Cannot find {addr}");
     for a in addrs {
         match TcpStream::connect_timeout(&a, Duration::from_secs(3)) {
-            Ok(_) => return format!("OK, {addr} answered in {} ms", t0.elapsed().as_millis()),
+            Ok(_) => return (true, format!("{addr} answered in {} ms", t0.elapsed().as_millis())),
             Err(e) => last = format!("{addr}: {e}"),
         }
     }
-    last
+    (false, last)
 }
 
 fn trunc(s: &str, n: usize) -> String {
@@ -752,16 +1145,139 @@ fn trunc(s: &str, n: usize) -> String {
     }
 }
 
-fn popup(fr: &mut Frame, title: &str, lines: Vec<Line>) {
+/// A box centred across, pinned near the top (like RawTap's setup box).
+fn top_box(full: Rect, w: u16, h: u16) -> Rect {
+    let w = w.min(full.width);
+    let h = h.min(full.height);
+    let top = if full.height >= h + 2 { 1 } else { 0 };
+    Rect { x: full.x + (full.width - w) / 2, y: full.y + top, width: w, height: h.min(full.height - top) }
+}
+
+fn confirm(fr: &mut Frame, heading: &str, color: Color, body: Vec<Line<'static>>, what: &str) {
+    let mut lines = vec!["".into()];
+    lines.extend(body.into_iter().map(|l| {
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(l.spans);
+        Line::from(spans)
+    }));
+    lines.push("".into());
+    let w = (lines.iter().map(|l| l.width()).max().unwrap_or(30) as u16 + 4).max(44).min(fr.area().width);
+    let h = (lines.len() as u16 + 2).min(fr.area().height);
     let a = fr.area();
-    let w = (lines.iter().map(|l| l.width()).max().unwrap_or(20) as u16 + 4).max(30).min(a.width);
-    let h = (lines.len() as u16 + 2).min(a.height);
-    let r = Rect { x: a.x + (a.width - w) / 2, y: a.y + (a.height - h) / 2, width: w, height: h };
-    fr.render_widget(Clear, r);
-    fr.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }).block(Block::bordered().title(title.to_string()).bold()),
-        r,
-    );
+    let area = Rect { x: a.x + (a.width - w) / 2, y: a.y + (a.height - h) / 2, width: w, height: h };
+    fr.render_widget(Clear, area);
+    let block = Block::bordered()
+        .title(Line::from(badge(heading.trim(), color)))
+        .title_bottom(Line::from(vec![
+            badge("Enter", Color::Green),
+            Span::raw(format!(" {what}  ")),
+            badge("Esc", Color::Gray),
+            Span::raw(" cancel "),
+        ]))
+        .border_style(Style::new().fg(color));
+    fr.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), area);
+}
+
+/// Greedy word wrap.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(10);
+    let mut rows = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        if !cur.is_empty() && cur.chars().count() + 1 + word.chars().count() > width {
+            rows.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+    }
+    if !cur.is_empty() {
+        rows.push(cur);
+    }
+    rows
+}
+
+/// Wraps tokens after a prefix, indenting continuation rows (RawTap's raw log layout).
+fn wrap_tokens(prefix: String, tokens: Vec<String>, sep: &str, style: Style, width: usize) -> Vec<Line<'static>> {
+    let indent = prefix.chars().count();
+    let avail = width.saturating_sub(indent).max(8);
+    let mut rows: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for t in tokens {
+        let add = if cur.is_empty() { t.len() } else { sep.len() + t.len() };
+        if !cur.is_empty() && cur.len() + add > avail {
+            rows.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push_str(sep);
+        }
+        cur.push_str(&t);
+    }
+    if !cur.is_empty() || rows.is_empty() {
+        rows.push(cur);
+    }
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let p = if i == 0 { prefix.clone() } else { " ".repeat(indent) };
+            Line::from(vec![Span::styled(p, DIM), Span::styled(r, style)])
+        })
+        .collect()
+}
+
+/// Screen rows for one traffic entry, in RawTap's formats and colours.
+fn entry_lines(l: &traffic::Line, width: u16, fmt: Fmt) -> Vec<Line<'static>> {
+    let w = width as usize;
+    match l {
+        traffic::Line::Event { time, msg } => {
+            let lower = msg.to_lowercase();
+            let (mark, style) = if lower.starts_with("connected") {
+                (OK, Style::new().fg(Color::Green))
+            } else if lower.contains("disconnected") || lower.contains("cannot") || lower.contains("failed")
+                || lower.contains("connect ")
+            {
+                (BAD, Style::new().fg(Color::LightRed))
+            } else {
+                ("·", Style::new().fg(Color::Gray))
+            };
+            let prefix = format!("{time} {mark} ");
+            let body = trunc(msg, w.saturating_sub(prefix.chars().count()).max(1));
+            vec![Line::from(vec![Span::styled(prefix, DIM), Span::styled(body, style)])]
+        }
+        traffic::Line::Data { time, dir, bytes } => {
+            let rx = *dir == Dir::Rx;
+            let tag = if rx { "RX" } else { "TX" };
+            let (hex_style, text_style) = if rx {
+                (Style::new().fg(Color::Cyan), Style::new().fg(Color::White))
+            } else {
+                (Style::new().fg(Color::Yellow), Style::new().fg(Color::LightYellow))
+            };
+            if fmt == Fmt::Compact {
+                let prefix = format!("{time} {tag} ");
+                let avail = w.saturating_sub(prefix.len());
+                let hex = codec::hex_string(bytes);
+                let hw = (avail / 2).max(8);
+                let text = codec::text_string(bytes);
+                return vec![Line::from(vec![
+                    Span::styled(prefix, DIM),
+                    Span::styled(format!("{:<hw$}", trunc(&hex, hw)), hex_style),
+                    Span::styled(" │ ", DIM),
+                    Span::styled(trunc(&text, avail.saturating_sub(hw + 3).max(1)), text_style),
+                ])];
+            }
+            let mut out = Vec::new();
+            if fmt != Fmt::Text {
+                let toks = bytes.iter().map(|b| format!("{b:02X}")).collect();
+                out.extend(wrap_tokens(format!("{time} {tag} HEX  "), toks, " ", hex_style, w));
+            }
+            if fmt != Fmt::Hex {
+                let toks = bytes.iter().map(|&b| codec::byte_text(b)).collect();
+                out.extend(wrap_tokens(format!("{time} {tag} TEXT "), toks, "", text_style, w));
+            }
+            out
+        }
+    }
 }
 
 #[cfg(test)]
@@ -774,17 +1290,20 @@ mod tests {
         let mut app = App::new();
         app.cfg = Config {
             links: vec![
-                Link { name: "Line 1 scanner".into(), tcp: "192.168.1.50:51236".into(), com: "COM5".into() },
-                Link { name: "Line 2 scanner".into(), tcp: "192.168.1.51:51236".into(), com: "COM6".into() },
+                Link { name: "Dock 3 scanner".into(), tcp: "10.1.128.186:51236".into(), com: "COM23".into() },
+                Link { name: "Scale".into(), tcp: "10.1.128.190:4001".into(), com: "COM24".into() },
             ],
         };
+        app.cfg_note = None;
         app.svc = "Running".into();
         app.drv = "Running".into();
         app.installed = true;
+        app.admin = false;
         app.traffic = vec![
-            traffic::parse_line("2026-11-16 12:01:20.000 -- connected to 192.168.1.50:51236").unwrap(),
+            traffic::parse_line("2026-11-16 12:01:20.000 -- connected to 10.1.128.186:51236").unwrap(),
             traffic::parse_line("2026-11-16 12:01:29.120 RX 30 39 38 37 36 35 34 33 32 31 0D 0A | x").unwrap(),
             traffic::parse_line("2026-11-16 12:01:40.002 TX 54 0D | T<CR>").unwrap(),
+            traffic::parse_line("2026-11-16 12:05:00.000 -- disconnected: device closed the connection").unwrap(),
         ];
         app
     }
@@ -799,29 +1318,103 @@ mod tests {
             .join("\n")
     }
 
+    fn progress(app: &App, plan: &'static Plan, states: Vec<St>, result: Option<Result<(), String>>) -> Screen {
+        let (_tx, rx) = channel();
+        let _ = app;
+        Screen::Progress(Progress {
+            plan,
+            states,
+            rx,
+            result,
+            since: Instant::now(),
+            after: After::Main,
+            success_note: "Your software can now open COM23.".into(),
+        })
+    }
+
+    fn install_states(upto: usize, last: St) -> Vec<St> {
+        let mut v = vec![St::Pending; setup::INSTALL.steps.len()];
+        for s in v.iter_mut().take(upto) {
+            *s = St::Done(String::new());
+        }
+        v[1] = St::Done(r"C:\ProgramData\ComTap\comtap_config.json".into());
+        v[4] = St::Skip("none found".into());
+        v[upto] = last;
+        v
+    }
+
     #[test]
-    fn draws_every_mode_at_any_size() {
+    fn draws_every_screen_at_any_size() {
         let mut app = sample();
-        for (w, h) in [(120, 32), (80, 24), (40, 12), (20, 6)] {
-            for fmt in [Fmt::Compact, Fmt::HexText, Fmt::Hex, Fmt::Text] {
-                app.fmt = fmt;
-                render(&app, w, h);
+        let screens = |app: &App| -> Vec<Screen> {
+            vec![
+                Screen::Welcome,
+                Screen::Form(app.form(None)),
+                Screen::Form(app.form(Some(0))),
+                progress(app, &setup::INSTALL, install_states(6, St::Running), None),
+                progress(app, &setup::INSTALL, install_states(10, St::Done("1 connected".into())), Some(Ok(()))),
+                progress(
+                    app,
+                    &setup::INSTALL,
+                    install_states(6, St::Fail("COM5 is reserved by another device".into())),
+                    Some(Err("x".into())),
+                ),
+                Screen::Main,
+            ]
+        };
+        for (w, h) in [(120, 40), (80, 24), (40, 12), (20, 6)] {
+            for s in screens(&app) {
+                app.screen = s;
+                for fmt in [Fmt::Compact, Fmt::HexText, Fmt::Hex, Fmt::Text] {
+                    app.fmt = fmt;
+                    render(&app, w, h);
+                }
             }
-            for m in 0..5 {
-                app.mode = match m {
-                    0 => Mode::Edit(app.form(Some(0))),
-                    1 => Mode::AdminPrompt,
-                    2 => Mode::ServiceMenu(1),
-                    3 => Mode::ConfirmDelete(1),
-                    _ => Mode::ConfirmUninstall,
+            app.screen = Screen::Main;
+            for o in 0..4 {
+                app.overlay = match o {
+                    0 => Overlay::Menu { sel: 2, filter: String::new() },
+                    1 => Overlay::Admin { open: "menu".into() },
+                    2 => Overlay::ConfirmDelete(1),
+                    _ => Overlay::ConfirmUninstall,
                 };
                 render(&app, w, h);
             }
-            app.mode = Mode::Main;
+            app.overlay = Overlay::None;
         }
+    }
+
+    #[test]
+    #[ignore = "prints screens; run with --ignored --nocapture"]
+    fn show_screens() {
+        let mut app = sample();
         app.fmt = Fmt::HexText;
-        println!("{}", render(&app, 110, 22));
-        app.mode = Mode::Edit(app.form(None));
-        println!("{}", render(&app, 110, 22));
+        let shots: Vec<(&str, Screen)> = vec![
+            ("WELCOME", Screen::Welcome),
+            ("FORM", Screen::Form(app.form(None))),
+            ("PROGRESS", progress(&app, &setup::INSTALL, install_states(6, St::Running), None)),
+            (
+                "DONE",
+                progress(
+                    &app,
+                    &setup::INSTALL,
+                    {
+                        let mut s = install_states(10, St::Done("1 connected".into()));
+                        s[2] = St::Done(r"C:\Program Files\ComTap\comtap.exe".into());
+                        s[6] = St::Done("COM23".into());
+                        s
+                    },
+                    Some(Ok(())),
+                ),
+            ),
+            ("MAIN", Screen::Main),
+        ];
+        for (name, s) in shots {
+            app.screen = s;
+            println!("===== {name}\n{}", render(&app, 100, 30));
+        }
+        app.screen = Screen::Main;
+        app.overlay = Overlay::Menu { sel: 3, filter: String::new() };
+        println!("===== MENU\n{}", render(&app, 100, 30));
     }
 }

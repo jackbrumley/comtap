@@ -7,15 +7,15 @@ mod config;
 mod logger;
 mod paths;
 mod service;
+mod setup;
 mod status;
 mod traffic;
 mod tui;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use config::Config;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -29,6 +29,9 @@ use std::time::Duration;
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
+    /// Screen to open on start (used when ComTap reopens itself as admin)
+    #[arg(long, hide = true)]
+    open: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -50,13 +53,10 @@ enum Cmd {
     },
     /// Restart the service, e.g. after editing the config (run as administrator)
     Restart,
-    /// Show the service and each link
+    /// Show the service and each device
     Status,
-    /// Create or repair the virtual ports from the config, then exit (run as administrator)
-    Ports {
-        #[arg(long)]
-        config: Option<PathBuf>,
-    },
+    /// Create or repair the virtual ports from the config (run as administrator)
+    Ports,
     /// Run the bridges in this window instead of as a service (for testing)
     Run {
         #[arg(long)]
@@ -72,18 +72,21 @@ fn main() {
     let result = match cli.cmd {
         None => {
             logger::init(paths::logs_dir(), false);
-            tui::run()
+            tui::run(cli.open)
         }
         Some(Cmd::Service) => service::dispatch(),
         Some(cmd) => {
-            logger::init(paths::logs_dir(), true);
+            logger::init(paths::logs_dir(), false);
             match cmd {
-                Cmd::Install { config } => install(config),
-                Cmd::Uninstall { keep_ports, remove_driver } => uninstall(keep_ports, remove_driver),
-                Cmd::Restart => restart(),
+                Cmd::Install { config } => install_cli(config),
+                Cmd::Uninstall { keep_ports, remove_driver } => {
+                    setup::uninstall(keep_ports, remove_driver, &mut setup::cli_reporter(&setup::UNINSTALL))
+                }
+                Cmd::Restart => setup::restart(&mut setup::cli_reporter(&setup::RESTART)),
                 Cmd::Status => show_status(),
-                Cmd::Ports { config } => ports(config),
+                Cmd::Ports => setup::repair(&mut setup::cli_reporter(&setup::REPAIR)),
                 Cmd::Run { config } => {
+                    logger::init(paths::logs_dir(), true);
                     let cfg = paths::resolve_config(config);
                     log!("Running in this window with {} (close the window to stop)", cfg.display());
                     run_all(&cfg, Arc::new(AtomicBool::new(false)))
@@ -98,11 +101,26 @@ fn main() {
     }
 }
 
-fn need_admin(what: &str) -> Result<()> {
-    if !service::is_admin() {
-        bail!("`comtap {what}` needs administrator rights. Open the terminal with \"Run as administrator\".");
+/// `comtap install`: picks the config (given, next to the exe, or installed), then installs.
+fn install_cli(config: Option<PathBuf>) -> Result<()> {
+    let installed = paths::installed_config();
+    let src = config.unwrap_or_else(|| {
+        let beside = paths::exe_dir().join("comtap_config.json");
+        if beside.exists() { beside } else { installed.clone() }
+    });
+    if !src.exists() {
+        let _ = std::fs::create_dir_all(paths::data_dir());
+        if std::fs::write(&installed, config::EXAMPLE).is_ok() {
+            bail!(
+                "No config yet. I wrote a starter at {}. Set each device's IP:port and COM port, then install again. \
+                 Or run comtap with no command for the setup screen.",
+                installed.display()
+            );
+        }
+        bail!("No config found. Run comtap with no command for the setup screen.");
     }
-    Ok(())
+    let cfg = Config::load(&src)?;
+    setup::install(&cfg, &mut setup::cli_reporter(&setup::INSTALL))
 }
 
 /// Runs every link until `stop`. Shared by the service and `comtap run`.
@@ -124,7 +142,7 @@ pub fn run_all(cfg_path: &Path, stop: Arc<AtomicBool>) -> Result<()> {
         .collect();
     let writer = status::spawn_writer(shared.clone(), stop.clone());
     if cfg.links.is_empty() {
-        log!("No links in {}. Idle until stopped.", cfg_path.display());
+        log!("No devices in {}. Idle until stopped.", cfg_path.display());
         while !stop.load(Ordering::Relaxed) {
             bridge::nap(Duration::from_secs(1), &stop);
         }
@@ -182,166 +200,6 @@ pub fn run_all(cfg_path: &Path, stop: Arc<AtomicBool>) -> Result<()> {
     }
     let _ = writer.join();
     let _ = flusher.join();
-    Ok(())
-}
-
-/// Full setup: config, exe, com0com, ports, service, desktop shortcut. Safe to repeat.
-pub fn install(config: Option<PathBuf>) -> Result<()> {
-    need_admin("install")?;
-    std::fs::create_dir_all(paths::data_dir())?;
-    std::fs::create_dir_all(paths::program_dir())?;
-
-    // 1. Config: copy the given one in, or keep the installed one, or write a starter and stop.
-    let dest_cfg = paths::installed_config();
-    let src_cfg = config.unwrap_or_else(|| paths::exe_dir().join("comtap_config.json"));
-    if src_cfg.exists() {
-        Config::load(&src_cfg)?;
-        let same = std::fs::canonicalize(&src_cfg).ok() == std::fs::canonicalize(&dest_cfg).ok();
-        if !same {
-            std::fs::copy(&src_cfg, &dest_cfg).with_context(|| format!("copying {}", src_cfg.display()))?;
-            log!("Config installed: {}", dest_cfg.display());
-        }
-    } else if !dest_cfg.exists() {
-        std::fs::write(&dest_cfg, config::EXAMPLE)?;
-        bail!(
-            "No config yet. I wrote a starter at {}. Set each scanner's IP:port and COM port, then install again.",
-            dest_cfg.display()
-        );
-    }
-    let cfg = Config::load(&dest_cfg)?;
-    if cfg.links.is_empty() {
-        bail!("Add at least one scanner (link) before installing.");
-    }
-
-    // 2. The exe: stop the service so the old copy isn't locked, then copy ourselves in.
-    service::stop()?;
-    let exe = std::env::current_exe()?;
-    let dest_exe = paths::installed_exe();
-    let same = std::fs::canonicalize(&exe).ok() == std::fs::canonicalize(&dest_exe).ok();
-    if !same {
-        std::fs::copy(&exe, &dest_exe).with_context(|| format!("copying to {}", dest_exe.display()))?;
-        log!("Installed {}", dest_exe.display());
-    }
-
-    // 3. com0com: unpack, trust its publisher, then create the pairs (this installs the driver on first use).
-    let c0c = paths::installed_com0com();
-    com0com::deploy_files(&c0c)?;
-    if let Err(e) = com0com::trust_publisher(&c0c) {
-        log!("Warning: could not pre-trust the com0com publisher ({e:#}). Windows may ask once.");
-    }
-    let setupc = com0com::Setupc::new(c0c);
-    com0com::reconcile(&setupc, &cfg.links)?;
-
-    // 4. Service and shortcut.
-    service::install(&dest_exe)?;
-    service::start()?;
-    log!("Service '{}' installed, set to start automatically, and running.", service::NAME);
-    match create_shortcut(&dest_exe) {
-        Ok(p) => log!("Desktop shortcut: {}", p.display()),
-        Err(e) => log!("Warning: could not create the desktop shortcut: {e:#}"),
-    }
-    for l in &cfg.links {
-        log!("{}: your software opens {} <-> {}", l.name, l.com, l.tcp);
-    }
-    Ok(())
-}
-
-/// Saves a new config and, if the service is installed, applies it straight away:
-/// removes pairs for COM ports no longer used, creates new ones, restarts the service.
-pub fn apply_config(new: &Config) -> Result<()> {
-    need_admin("save")?;
-    let path = paths::installed_config();
-    let old = Config::load(&path).ok();
-    let installed = service::is_installed();
-    if installed {
-        service::stop()?;
-    }
-    if let (Some(old), Ok(setupc)) = (old, com0com::Setupc::find()) {
-        let gone: Vec<_> = old.links.into_iter().filter(|o| !new.links.iter().any(|n| n.com == o.com)).collect();
-        if !gone.is_empty() {
-            com0com::remove_pairs(&setupc, &gone)?;
-        }
-    }
-    new.save(&path)?;
-    log!("Config saved: {}", path.display());
-    if installed {
-        if !new.links.is_empty() {
-            com0com::reconcile(&com0com::Setupc::find()?, &new.links)?;
-        }
-        service::start()?;
-        log!("Service restarted with the new config");
-    }
-    Ok(())
-}
-
-pub fn uninstall(keep_ports: bool, remove_driver: bool) -> Result<()> {
-    need_admin("uninstall")?;
-    service::delete()?;
-    log!("Service removed");
-    if let Ok(setupc) = com0com::Setupc::find() {
-        if remove_driver {
-            setupc.uninstall_driver()?;
-            log!("com0com driver and all its pairs removed");
-        } else if !keep_ports {
-            if let Ok(cfg) = Config::load(&paths::installed_config()) {
-                com0com::remove_pairs(&setupc, &cfg.links)?;
-            }
-        }
-    }
-    let _ = std::fs::remove_file(paths::shortcut());
-    log!(
-        "Uninstalled. Config, logs and traffic are kept in {}. {} can be deleted.",
-        paths::data_dir().display(),
-        paths::program_dir().display()
-    );
-    Ok(())
-}
-
-pub fn restart() -> Result<()> {
-    need_admin("restart")?;
-    service::stop()?;
-    service::start()?;
-    log!("Service restarted");
-    Ok(())
-}
-
-fn ports(config: Option<PathBuf>) -> Result<()> {
-    need_admin("ports")?;
-    let cfg = Config::load(&paths::resolve_config(config))?;
-    let setupc = com0com::Setupc::find()?;
-    com0com::reconcile(&setupc, &cfg.links)?;
-    Ok(())
-}
-
-fn ps_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
-}
-
-/// ComTap.lnk on the Public Desktop, so every user on the PC can open the screen.
-fn create_shortcut(target: &Path) -> Result<PathBuf> {
-    let lnk = paths::shortcut();
-    let script = format!(
-        "$ErrorActionPreference='Stop'; $s=(New-Object -ComObject WScript.Shell).CreateShortcut({}); \
-         $s.TargetPath={}; $s.WorkingDirectory={}; $s.Description='ComTap: TCP devices as COM ports'; $s.Save()",
-        ps_quote(&lnk.display().to_string()),
-        ps_quote(&target.display().to_string()),
-        ps_quote(&paths::program_dir().display().to_string()),
-    );
-    let out = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output()?;
-    if !out.status.success() {
-        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
-    }
-    Ok(lnk)
-}
-
-/// Starts this exe again as administrator (UAC prompt). Err if the user says no.
-pub fn relaunch_as_admin() -> Result<()> {
-    let exe = std::env::current_exe()?;
-    let script = format!("Start-Process -FilePath {} -Verb RunAs", ps_quote(&exe.display().to_string()));
-    let out = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output()?;
-    if !out.status.success() {
-        bail!("not elevated (UAC was declined or failed)");
-    }
     Ok(())
 }
 

@@ -238,7 +238,12 @@ pub fn reconcile(setupc: &Setupc, links: &[Link]) -> Result<Vec<String>> {
                     );
                 }
                 if com_in_use(&link.com) {
-                    bail!("{} is already used by another device. Pick another COM number in the config.", link.com);
+                    bail!(
+                        "{} is reserved by another device (one that is plugged in, or was before). \
+                         Pick a free COM port for '{}'.",
+                        link.com,
+                        link.name
+                    );
                 }
                 log!("Creating virtual port pair for {} ({})", link.com, link.name);
                 setupc.install_pair(&link.com)?;
@@ -275,9 +280,95 @@ pub fn remove_pairs(setupc: &Setupc, links: &[Link]) -> Result<()> {
 }
 
 fn com_in_use(com: &str) -> bool {
-    serialport::available_ports()
-        .map(|ports| ports.iter().any(|p| p.port_name.eq_ignore_ascii_case(com)))
-        .unwrap_or(false)
+    let n = com.get(3..).and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
+    comdb_reserved().contains(&n)
+        || serialport::available_ports()
+            .map(|ports| ports.iter().any(|p| p.port_name.eq_ignore_ascii_case(com)))
+            .unwrap_or(false)
+}
+
+/// COM numbers Windows has reserved in its COM port database (ComDB). A number stays reserved
+/// after its device (e.g. a USB serial adapter) is unplugged, and setupc stops with a dialog
+/// if asked to use one, so ComTap only offers numbers that aren't in here.
+pub fn comdb_reserved() -> Vec<u32> {
+    let out = Command::new("reg")
+        .args(["query", r"HKLM\SYSTEM\CurrentControlSet\Control\COM Name Arbiter", "/v", "ComDB"])
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    parse_comdb(&String::from_utf8_lossy(&out.stdout))
+}
+
+pub fn parse_comdb(reg_output: &str) -> Vec<u32> {
+    let Some(hex) = reg_output
+        .lines()
+        .find(|l| l.contains("REG_BINARY"))
+        .and_then(|l| l.split_whitespace().last())
+    else {
+        return Vec::new();
+    };
+    let bytes: Vec<u8> =
+        (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()).collect();
+    let mut out = Vec::new();
+    for (i, b) in bytes.iter().enumerate() {
+        for bit in 0..8 {
+            if b & (1 << bit) != 0 {
+                out.push((i * 8 + bit + 1) as u32);
+            }
+        }
+    }
+    out
+}
+
+/// COM ports a new link can use: not reserved in ComDB, not present, not in `taken`.
+pub fn free_ports(taken: &[String], limit: usize) -> Vec<String> {
+    let reserved = comdb_reserved();
+    let present: Vec<String> = serialport::available_ports()
+        .map(|v| v.into_iter().map(|p| p.port_name.to_ascii_uppercase()).collect())
+        .unwrap_or_default();
+    (1..=255u32)
+        .filter(|n| !reserved.contains(n))
+        .map(|n| format!("COM{n}"))
+        .filter(|c| !present.contains(c) && !taken.contains(c))
+        .take(limit)
+        .collect()
+}
+
+/// com0com driver packages in the driver store that aren't 2.2.2.0, as (published name, version).
+/// Windows prefers the newest version for new pairs, and com0com 3.0 is unsigned for x64,
+/// so a leftover 3.0 package makes every new pair fail with code 52.
+pub fn other_driver_packages() -> Vec<(String, String)> {
+    let Ok(out) = Command::new("pnputil").arg("/enum-drivers").output() else { return Vec::new() };
+    parse_pnputil(&String::from_utf8_lossy(&out.stdout))
+}
+
+pub fn parse_pnputil(text: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for block in text.replace("\r\n", "\n").split("\n\n") {
+        let field = |key: &str| {
+            block
+                .lines()
+                .find(|l| l.trim_start().starts_with(key))
+                .and_then(|l| l.split_once(':'))
+                .map(|(_, v)| v.trim().to_string())
+        };
+        if !field("Original Name").is_some_and(|n| n.eq_ignore_ascii_case("com0com.inf")) {
+            continue;
+        }
+        let (Some(oem), Some(ver)) = (field("Published Name"), field("Driver Version")) else { continue };
+        let ver = ver.split_whitespace().last().unwrap_or("").to_string();
+        if ver != "2.2.2.0" {
+            found.push((oem, ver));
+        }
+    }
+    found
+}
+
+pub fn delete_driver_package(oem: &str) -> Result<()> {
+    let out = Command::new("pnputil").args(["/delete-driver", oem, "/uninstall", "/force"]).output()?;
+    if !out.status.success() {
+        bail!("pnputil /delete-driver {oem}: {}", String::from_utf8_lossy(&out.stdout).trim());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -287,6 +378,26 @@ mod tests {
     const LIST: &str = "       CNCA0 PortName=COM5\r\n       CNCB0 PortName=-,HiddenMode=yes\r\n\
                         \r\n       CNCA1 PortName=COM6,EmuBR=yes\r\n       CNCB1 PortName=-\r\n\
                         some other line\r\n       CNCA3 PortName=COM9\r\n       CNCB3 PortName=MYPORT\r\n";
+
+    #[test]
+    fn parses_comdb_bitmap() {
+        // This PC's real value: COM1, COM3-COM22 reserved.
+        let out = "\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\COM Name Arbiter\r\n    ComDB    REG_BINARY    FDFF3F0000000000\r\n";
+        let r = parse_comdb(out);
+        assert_eq!(r[0], 1);
+        assert!(!r.contains(&2));
+        assert!(r.contains(&3) && r.contains(&22));
+        assert!(!r.contains(&23));
+        assert_eq!(r.len(), 21);
+    }
+
+    #[test]
+    fn finds_other_com0com_versions() {
+        let out = "Microsoft PnP Utility\r\n\r\nPublished Name:     oem12.inf\r\nOriginal Name:      usbser.inf\r\nDriver Version:     01/01/2020 1.0.0.0\r\n\r\n\
+                   Published Name:     oem362.inf\r\nOriginal Name:      com0com.inf\r\nProvider Name:      Vyacheslav Frolov\r\nDriver Version:     06/04/2012 3.0.0.0\r\n\r\n\
+                   Published Name:     oem400.inf\r\nOriginal Name:      com0com.inf\r\nDriver Version:     01/25/2011 2.2.2.0\r\n";
+        assert_eq!(parse_pnputil(out), vec![("oem362.inf".to_string(), "3.0.0.0".to_string())]);
+    }
 
     #[test]
     fn parses_setupc_list() {

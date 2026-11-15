@@ -20,7 +20,7 @@ pub struct Link {
 pub const EXAMPLE: &str = r#"{
   "links": [
     {
-      "name": "Line 1 scanner",
+      "name": "Device 1",
       "tcp": "192.168.1.50:51236",
       "com": "COM5"
     }

@@ -4,7 +4,6 @@ use crate::config::{Config, Link};
 use crate::{com0com, log, paths, service, status};
 use anyhow::{Context, Result, bail};
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -338,10 +337,7 @@ fn create_shortcut(target: &Path) -> Result<std::path::PathBuf> {
         ps_quote(&target.display().to_string()),
         ps_quote(&paths::program_dir().display().to_string()),
     );
-    let out = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output()?;
-    if !out.status.success() {
-        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
-    }
+    com0com::powershell(&script)?;
     Ok(lnk)
 }
 
@@ -353,8 +349,7 @@ pub fn relaunch_as_admin(open: &str) -> Result<()> {
         ps_quote(&exe.display().to_string()),
         ps_quote(open)
     );
-    let out = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output()?;
-    if !out.status.success() {
+    if com0com::powershell(&script).is_err() {
         bail!("Windows did not give admin rights (the UAC prompt was declined)");
     }
     Ok(())

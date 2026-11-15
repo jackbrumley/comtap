@@ -82,15 +82,28 @@ pub fn trust_publisher(dir: &Path) -> Result<()> {
          $s.Open('ReadWrite'); $s.Add($c); $s.Close(); $c.Subject",
         cat.display().to_string().replace('\'', "''")
     );
+    let out = powershell(&script)?;
+    log!("Trusted driver publisher: {}", out.trim());
+    Ok(())
+}
+
+/// Runs a Windows PowerShell 5.1 script and returns its output.
+///
+/// PSModulePath is cleared for the child: when ComTap is started from PowerShell 7, the child
+/// would inherit 7's module folders and fail to load its own modules (e.g. "the module
+/// Microsoft.PowerShell.Security could not be loaded").
+pub fn powershell(script: &str) -> Result<String> {
     let out = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .env_remove("PSModulePath")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .output()
         .context("running powershell")?;
     if !out.status.success() {
-        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+        // The first line says what went wrong; the rest is PowerShell's position noise.
+        let err = String::from_utf8_lossy(&out.stderr);
+        bail!("{}", err.lines().find(|l| !l.trim().is_empty()).unwrap_or("powershell failed").trim());
     }
-    log!("Trusted driver publisher: {}", String::from_utf8_lossy(&out.stdout).trim());
-    Ok(())
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 #[derive(Debug, Clone, PartialEq)]

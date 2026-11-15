@@ -90,6 +90,8 @@ struct Form {
     coms: Vec<String>,
     /// True when ComTap isn't installed yet: Enter installs.
     install: bool,
+    /// Something ComTap changed for you, e.g. a reserved COM port swapped for a free one.
+    note: Option<String>,
     err: Option<String>,
     test: Option<Receiver<(bool, String)>>,
     test_msg: Option<(bool, String)>,
@@ -405,7 +407,18 @@ impl App {
         match (result, p.after) {
             (Err(e), After::FormOnFail { idx, link, install }) => {
                 let mut f = self.form(idx);
-                f.fields = [link.name.clone(), host_of(&link.tcp), port_of(&link.tcp), link.com.clone()];
+                f.fields[F_NAME] = link.name.clone();
+                f.fields[F_HOST] = host_of(&link.tcp);
+                f.fields[F_PORT] = port_of(&link.tcp);
+                if f.coms.contains(&link.com) {
+                    f.fields[F_COM] = link.com.clone();
+                    f.note = None;
+                } else if f.note.is_none() {
+                    f.note = Some(format!(
+                        "{} is reserved by another device on this PC, so I picked {}. Use ←→ to choose another.",
+                        link.com, f.fields[F_COM]
+                    ));
+                }
                 f.install = install && !self.installed;
                 f.err = Some(e.clone());
                 self.screen = Screen::Form(f);
@@ -586,17 +599,30 @@ impl App {
         let taken: Vec<String> =
             self.cfg.links.iter().enumerate().filter(|(i, _)| Some(*i) != idx).map(|(_, l)| l.com.clone()).collect();
         let mut coms = com0com::free_ports(&taken, 40);
-        // A device's own port is reserved by its own pair, so add it back.
+        let mut note = None;
+        let mut com = com;
         if !com.is_empty() && !coms.contains(&com) {
-            coms.insert(0, com.clone());
+            if self.installed && idx.is_some() {
+                // An installed device's port is reserved by its own pair: keep it on offer.
+                coms.insert(0, com.clone());
+            } else {
+                let first = coms.first().cloned().unwrap_or_default();
+                note = Some(format!(
+                    "{com} is reserved by another device on this PC, so I picked {first}. Use ←→ to choose another."
+                ));
+                com = first;
+            }
         }
-        let com = if com.is_empty() { coms.first().cloned().unwrap_or_default() } else { com };
+        if com.is_empty() {
+            com = coms.first().cloned().unwrap_or_default();
+        }
         Form {
             idx,
             fields: [name, host, port, com],
             focus: if idx.is_none() { F_HOST } else { F_NAME },
             coms,
             install: !self.installed,
+            note,
             err: None,
             test: None,
             test_msg: None,
@@ -623,6 +649,7 @@ impl App {
                 let n = f.coms.len();
                 let next = if k.code == KeyCode::Right { (pos + 1) % n } else { (pos + n - 1) % n };
                 f.fields[F_COM] = f.coms[next].clone();
+                f.note = None;
             }
             KeyCode::Backspace if f.focus != F_COM => {
                 f.fields[f.focus].pop();
@@ -804,6 +831,12 @@ impl App {
                 }
             }
             lines.push(Line::from(spans));
+        }
+        if let Some(n) = &f.note {
+            lines.push("".into());
+            for r in wrap_words(n, inner_w.saturating_sub(6) as usize) {
+                lines.push(Line::from(Span::styled(format!("   {r}"), Style::new().fg(Color::Yellow))));
+            }
         }
         lines.push("".into());
         lines.push(Line::from(Span::styled(format!("   {}", "─".repeat(inner_w.saturating_sub(6) as usize)), DIM)));

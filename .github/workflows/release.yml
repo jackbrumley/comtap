@@ -162,7 +162,7 @@ jobs:
         run: |
           $device = Join-Path $env:RUNNER_TEMP "fake-device.ps1"
           @'
-          $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 47001)
+          $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 52317)
           $listener.Start()
           while ($true) {
             $client = $listener.AcceptTcpClient()
@@ -176,12 +176,18 @@ jobs:
             } catch { $client.Close() }
           }
           '@ | Set-Content -Path $device
-          Start-Process -FilePath pwsh -ArgumentList "-NoProfile", "-File", $device -WindowStyle Hidden
+          # (52317, not 47001: Windows keeps 47001 for WinRM.)
+          $proc = Start-Process -FilePath pwsh -ArgumentList "-NoProfile", "-File", $device -WindowStyle Hidden -PassThru
+          Start-Sleep -Seconds 3
+          if ($proc.HasExited) { Write-Error "the fake device exited (exit $($proc.ExitCode)); is port 52317 free?"; exit 1 }
+          if (-not (Get-NetTCPConnection -LocalPort 52317 -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $proc.Id)) {
+            Write-Error "the fake device is not listening on port 52317"; exit 1
+          }
 
       - name: Set up a device end to end
         run: |
           $config = Join-Path $env:RUNNER_TEMP "comtap_config.json"
-          '{ "links": [ { "name": "CI device", "tcp": "127.0.0.1:47001", "com": "COM9" } ] }' | Set-Content -Path $config
+          '{ "links": [ { "name": "CI device", "tcp": "127.0.0.1:52317", "com": "COM9" } ] }' | Set-Content -Path $config
           $exe = Join-Path $env:ProgramFiles "ComTap\comtap.exe"
           & $exe install --config $config
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

@@ -39,7 +39,12 @@ if (-not $IsAdmin) {
   if ($PurgeData) { $ArgList += "-PurgeData" }
   if ($RemoveDriver) { $ArgList += "-RemoveDriver" }
   try {
-    $Child = Start-Process -FilePath "powershell.exe" -ArgumentList $ArgList -Verb RunAs -Wait -PassThru
+    # Not -Wait: it also waits for everything the child starts, so this window
+    # could stay open after the uninstall has finished.
+    # Reading .Handle first keeps the exit code readable after the wait.
+    $Child = Start-Process -FilePath "powershell.exe" -ArgumentList $ArgList -Verb RunAs -PassThru
+    $null = $Child.Handle
+    $Child.WaitForExit()
   } catch {
     Log "Windows did not give administrator rights, so nothing was removed."
     exit 1

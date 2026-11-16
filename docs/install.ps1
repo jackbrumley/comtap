@@ -53,7 +53,12 @@ if (-not $IsAdmin) {
   if ($InsecureSkipVerify) { $ArgList += "-InsecureSkipVerify" }
   if ($NoRelaunch) { $ArgList += "-NoRelaunch" }
   try {
-    $Child = Start-Process -FilePath "powershell.exe" -ArgumentList $ArgList -Verb RunAs -Wait -PassThru
+    # Not -Wait: it also waits for everything the child starts, so this window
+    # would stay open until the ComTap screen the installer opens is closed.
+    # Reading .Handle first keeps the exit code readable after the wait.
+    $Child = Start-Process -FilePath "powershell.exe" -ArgumentList $ArgList -Verb RunAs -PassThru
+    $null = $Child.Handle
+    $Child.WaitForExit()
   } catch {
     Write-Host "[comtap] ERROR: Windows did not give administrator rights, so nothing was installed." -ForegroundColor Red
     exit 1

@@ -27,11 +27,18 @@ fn embed_com0com() {
         for n in names {
             let abs = fs::canonicalize(dir.join(&n)).unwrap();
             println!("cargo:rerun-if-changed={}", abs.display());
-            out.push_str(&format!("    ({n:?}, include_bytes!({:?})),\n", abs.display().to_string()));
+            out.push_str(&format!(
+                "    ({n:?}, include_bytes!({:?})),\n",
+                abs.display().to_string()
+            ));
         }
     }
     out.push_str("];\n");
-    fs::write(Path::new(&env::var("OUT_DIR").unwrap()).join("embedded.rs"), out).unwrap();
+    fs::write(
+        Path::new(&env::var("OUT_DIR").unwrap()).join("embedded.rs"),
+        out,
+    )
+    .unwrap();
 }
 
 fn embed_windows_resources() {

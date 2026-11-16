@@ -18,14 +18,22 @@ pub fn init(dir: PathBuf, echo: bool) {
     ECHO.store(echo, Ordering::Relaxed);
     let _ = fs::create_dir_all(&dir);
     prune(&dir);
-    *STATE.lock().unwrap() = Some(State { dir, day: String::new(), file: None });
+    *STATE.lock().unwrap() = Some(State {
+        dir,
+        day: String::new(),
+        file: None,
+    });
 }
 
 fn prune(dir: &Path) {
     let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(14 * 86400);
     if let Ok(rd) = fs::read_dir(dir) {
         for e in rd.flatten() {
-            let old = e.metadata().and_then(|m| m.modified()).map(|t| t < cutoff).unwrap_or(false);
+            let old = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .map(|t| t < cutoff)
+                .unwrap_or(false);
             if old && e.file_name().to_string_lossy().starts_with("comtap-") {
                 let _ = fs::remove_file(e.path());
             }

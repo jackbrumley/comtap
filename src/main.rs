@@ -11,6 +11,7 @@ mod setup;
 mod status;
 mod traffic;
 mod tui;
+mod update;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
@@ -32,6 +33,9 @@ struct Cli {
     /// Screen to open on start (used when ComTap reopens itself as admin)
     #[arg(long, hide = true)]
     open: Option<String>,
+    /// Set by the updater when the install failed: says so, with the update log's path
+    #[arg(long, hide = true)]
+    update_failed: bool,
 }
 
 #[derive(Subcommand)]
@@ -57,6 +61,8 @@ enum Cmd {
     Status,
     /// Create or repair the virtual ports from the config (run as administrator)
     Ports,
+    /// Update to the latest release (opens the installer in a new window)
+    Update,
     /// Run the bridges in this window instead of as a service (for testing)
     Run {
         #[arg(long)]
@@ -72,7 +78,7 @@ fn main() {
     let result = match cli.cmd {
         None => {
             logger::init(paths::logs_dir(), false);
-            tui::run(cli.open)
+            tui::run(cli.open, cli.update_failed)
         }
         Some(Cmd::Service) => service::dispatch(),
         Some(cmd) => {
@@ -84,6 +90,9 @@ fn main() {
                 }
                 Cmd::Restart => setup::restart(&mut setup::cli_reporter(&setup::RESTART)),
                 Cmd::Status => show_status(),
+                Cmd::Update => update::run_update().map_err(anyhow::Error::msg).map(|()| {
+                    println!("The installer is running in a new window. Windows will ask for admin permission.");
+                }),
                 Cmd::Ports => setup::repair(&mut setup::cli_reporter(&setup::REPAIR)),
                 Cmd::Run { config } => {
                     logger::init(paths::logs_dir(), true);
@@ -106,7 +115,11 @@ fn install_cli(config: Option<PathBuf>) -> Result<()> {
     let installed = paths::installed_config();
     let src = config.unwrap_or_else(|| {
         let beside = paths::exe_dir().join("comtap_config.json");
-        if beside.exists() { beside } else { installed.clone() }
+        if beside.exists() {
+            beside
+        } else {
+            installed.clone()
+        }
     });
     if !src.exists() {
         let _ = std::fs::create_dir_all(paths::data_dir());
@@ -207,12 +220,18 @@ fn show_status() -> Result<()> {
     println!("Service: {}", service::state_text());
     println!("Driver:  {}", service::driver_state_text());
     let Some(st) = status::read() else {
-        println!("No status yet ({} not found).", paths::status_file().display());
+        println!(
+            "No status yet ({} not found).",
+            paths::status_file().display()
+        );
         return Ok(());
     };
     let age = chrono::Local::now().timestamp() - st.written_unix;
     if age > 10 {
-        println!("Status last written {} ({age} s ago); the service may not be running.", st.written);
+        println!(
+            "Status last written {} ({age} s ago); the service may not be running.",
+            st.written
+        );
     }
     for l in &st.links {
         println!();
@@ -222,7 +241,10 @@ fn show_status() -> Result<()> {
             println!("  last err  {e}");
         }
         println!("  last data {}", l.last_rx.as_deref().unwrap_or("none yet"));
-        println!("  bytes     {} in from device, {} out to device, {} connects", l.rx_bytes, l.tx_bytes, l.connects);
+        println!(
+            "  bytes     {} in from device, {} out to device, {} connects",
+            l.rx_bytes, l.tx_bytes, l.connects
+        );
     }
     Ok(())
 }

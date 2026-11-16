@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 fn env_dir(var: &str, fallback: &str) -> PathBuf {
-    std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(fallback))
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(fallback))
 }
 
 /// C:\Program Files\ComTap: the installed exe and the com0com files.
@@ -40,7 +42,9 @@ pub fn traffic_dir() -> PathBuf {
 
 /// ComTap.lnk on the Public Desktop (every user sees it).
 pub fn shortcut() -> PathBuf {
-    env_dir("PUBLIC", r"C:\Users\Public").join("Desktop").join("ComTap.lnk")
+    env_dir("PUBLIC", r"C:\Users\Public")
+        .join("Desktop")
+        .join("ComTap.lnk")
 }
 
 pub fn exe_dir() -> PathBuf {

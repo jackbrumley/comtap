@@ -33,7 +33,10 @@ impl Device for TcpStream {
 }
 
 fn is_timeout(e: &io::Error) -> bool {
-    matches!(e.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock | ErrorKind::Interrupted)
+    matches!(
+        e.kind(),
+        ErrorKind::TimedOut | ErrorKind::WouldBlock | ErrorKind::Interrupted
+    )
 }
 
 /// Sleeps up to `dur`, waking early on stop.
@@ -45,7 +48,13 @@ pub fn nap(dur: Duration, stop: &AtomicBool) {
 }
 
 /// Runs one link for ever: opens the COM side, then keeps the TCP side connected.
-pub fn run_link(link: Link, device_path: String, stop: Arc<AtomicBool>, st: Shared, traffic: Arc<Traffic>) {
+pub fn run_link(
+    link: Link,
+    device_path: String,
+    stop: Arc<AtomicBool>,
+    st: Shared,
+    traffic: Arc<Traffic>,
+) {
     let mut last_err = String::new();
     while !stop.load(Ordering::Relaxed) {
         let opened = serialport::new(&device_path, 115_200).timeout(POLL).open();
@@ -67,7 +76,11 @@ pub fn run_link(link: Link, device_path: String, stop: Arc<AtomicBool>, st: Shar
         // Look like a powered device to the software: it sees DSR, DCD and CTS.
         let _ = port.write_data_terminal_ready(true);
         let _ = port.write_request_to_send(true);
-        log!("[{}] Opened {device_path} (software side {})", link.name, link.com);
+        log!(
+            "[{}] Opened {device_path} (software side {})",
+            link.name,
+            link.com
+        );
         if let Err(e) = run_with_device(&link, Box::new(port), &stop, &st, &traffic) {
             let msg = format!("{device_path} failed: {e}");
             log!("[{}] {msg}. Reopening.", link.name);
@@ -206,7 +219,9 @@ fn session(
                             Err(e) if is_timeout(&e) => {
                                 dropped += n as u64;
                                 if dropped == n as u64 || dropped % 4096 < n as u64 {
-                                    log!("[{name}] COM side not reading; dropped {dropped} bytes so far");
+                                    log!(
+                                        "[{name}] COM side not reading; dropped {dropped} bytes so far"
+                                    );
                                 }
                             }
                             Err(e) => {
@@ -250,11 +265,17 @@ fn session(
     }
     done.store(true, Ordering::Relaxed);
     let _ = tcp_w.shutdown(Shutdown::Both);
-    let their_reason = reader.join().unwrap_or_else(|_| String::from("reader thread panicked"));
+    let their_reason = reader
+        .join()
+        .unwrap_or_else(|_| String::from("reader thread panicked"));
     if let Some(e) = dev_failed.lock().unwrap().take() {
         return Err(e);
     }
-    Ok(my_reason.unwrap_or(if stop.load(Ordering::Relaxed) { String::from("stopping") } else { their_reason }))
+    Ok(my_reason.unwrap_or(if stop.load(Ordering::Relaxed) {
+        String::from("stopping")
+    } else {
+        their_reason
+    }))
 }
 
 #[cfg(test)]
@@ -292,7 +313,15 @@ mod tests {
 
         let t = {
             let (link, stop, st) = (link.clone(), stop.clone(), st.clone());
-            std::thread::spawn(move || run_with_device(&link, Box::new(com_side), &stop, &st, &Arc::new(Traffic::disabled())))
+            std::thread::spawn(move || {
+                run_with_device(
+                    &link,
+                    Box::new(com_side),
+                    &stop,
+                    &st,
+                    &Arc::new(Traffic::disabled()),
+                )
+            })
         };
 
         // First connection: a barcode reaches the software, and a trigger reaches the scanner.
@@ -321,14 +350,29 @@ mod tests {
     #[test]
     fn retries_until_device_appears() {
         // Reserve a port, then free it, so the first connects fail.
-        let addr = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-        let link = Link { name: "late".into(), tcp: addr.to_string(), com: "COM98".into() };
+        let addr = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let link = Link {
+            name: "late".into(),
+            tcp: addr.to_string(),
+            com: "COM98".into(),
+        };
         let (com_side, mut software) = fake_com();
         let stop = Arc::new(AtomicBool::new(false));
         let st: Shared = Arc::default();
         let t = {
             let (link, stop, st) = (link.clone(), stop.clone(), st.clone());
-            std::thread::spawn(move || run_with_device(&link, Box::new(com_side), &stop, &st, &Arc::new(Traffic::disabled())))
+            std::thread::spawn(move || {
+                run_with_device(
+                    &link,
+                    Box::new(com_side),
+                    &stop,
+                    &st,
+                    &Arc::new(Traffic::disabled()),
+                )
+            })
         };
         // Windows takes about 2 s to report a refused connection on localhost.
         let end = Instant::now() + Duration::from_secs(10);

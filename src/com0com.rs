@@ -14,14 +14,24 @@ mod embedded {
 
 /// Files setupc needs beside it to create pairs and install the driver.
 /// (com0com 2.2.2.0 signed x64: the .sys is signed through com0com.cat.)
-pub const REQUIRED: &[&str] = &["setupc.exe", "setup.dll", "com0com.inf", "com0com.sys", "com0com.cat"];
+pub const REQUIRED: &[&str] = &[
+    "setupc.exe",
+    "setup.dll",
+    "com0com.inf",
+    "com0com.sys",
+    "com0com.cat",
+];
 
 pub fn has_embedded() -> bool {
     !embedded::FILES.is_empty()
 }
 
 fn missing_in(dir: &Path) -> Vec<&'static str> {
-    REQUIRED.iter().copied().filter(|f| !dir.join(f).is_file()).collect()
+    REQUIRED
+        .iter()
+        .copied()
+        .filter(|f| !dir.join(f).is_file())
+        .collect()
 }
 
 /// Puts the com0com files into `dest`: from inside the exe if built with them, else from a
@@ -55,14 +65,21 @@ pub fn deploy_files(dest: &Path) -> Result<()> {
     }
     let missing = missing_in(dest);
     if !missing.is_empty() {
-        bail!("com0com files missing from {}: {}", dest.display(), missing.join(", "));
+        bail!(
+            "com0com files missing from {}: {}",
+            dest.display(),
+            missing.join(", ")
+        );
     }
     Ok(())
 }
 
 /// Where setupc.exe is: the installed copy, else a com0com folder next to the exe.
 pub fn locate() -> Result<PathBuf> {
-    for dir in [crate::paths::installed_com0com(), crate::paths::exe_dir().join("com0com")] {
+    for dir in [
+        crate::paths::installed_com0com(),
+        crate::paths::exe_dir().join("com0com"),
+    ] {
         if missing_in(&dir).is_empty() {
             return Ok(dir);
         }
@@ -101,7 +118,13 @@ pub fn powershell(script: &str) -> Result<String> {
     if !out.status.success() {
         // The first line says what went wrong; the rest is PowerShell's position noise.
         let err = String::from_utf8_lossy(&out.stderr);
-        bail!("{}", err.lines().find(|l| !l.trim().is_empty()).unwrap_or("powershell failed").trim());
+        bail!(
+            "{}",
+            err.lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("powershell failed")
+                .trim()
+        );
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -114,7 +137,9 @@ pub struct Pair {
 }
 
 fn param<'a>(p: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    p.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str())
+    p.iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v.as_str())
 }
 
 impl Pair {
@@ -149,10 +174,14 @@ pub fn parse_list(text: &str) -> Vec<Pair> {
         let line = line.trim();
         let (id, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
         let id = id.to_ascii_uppercase();
-        let Some(tail) = id.strip_prefix("CNC") else { continue };
+        let Some(tail) = id.strip_prefix("CNC") else {
+            continue;
+        };
         let mut chars = tail.chars();
         let side = chars.next();
-        let Ok(index) = chars.as_str().parse::<u32>() else { continue };
+        let Ok(index) = chars.as_str().parse::<u32>() else {
+            continue;
+        };
         let params: Vec<(String, String)> = rest
             .trim()
             .split(',')
@@ -162,7 +191,11 @@ pub fn parse_list(text: &str) -> Vec<Pair> {
         let pos = match pairs.iter().position(|p| p.index == index) {
             Some(i) => i,
             None => {
-                pairs.push(Pair { index, a: vec![], b: vec![] });
+                pairs.push(Pair {
+                    index,
+                    a: vec![],
+                    b: vec![],
+                });
                 pairs.len() - 1
             }
         };
@@ -197,9 +230,18 @@ impl Setupc {
             .args(args)
             .output()
             .with_context(|| format!("running setupc in {}", self.dir.display()))?;
-        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
         if !out.status.success() {
-            bail!("setupc {} failed ({}): {}", args.join(" "), out.status, text.trim());
+            bail!(
+                "setupc {} failed ({}): {}",
+                args.join(" "),
+                out.status,
+                text.trim()
+            );
         }
         Ok(text)
     }
@@ -237,7 +279,10 @@ pub fn reconcile(setupc: &Setupc, links: &[Link]) -> Result<Vec<String>> {
     let mut pairs = setupc.list()?;
     let mut out = Vec::new();
     for link in links {
-        let pair = match pairs.iter().find(|p| p.a_name().eq_ignore_ascii_case(&link.com)) {
+        let pair = match pairs
+            .iter()
+            .find(|p| p.a_name().eq_ignore_ascii_case(&link.com))
+        {
             Some(p) => p.clone(),
             None => {
                 if let Some(p) = pairs.iter().find(|p| {
@@ -258,14 +303,20 @@ pub fn reconcile(setupc: &Setupc, links: &[Link]) -> Result<Vec<String>> {
                         link.name
                     );
                 }
-                log!("Creating virtual port pair for {} ({})", link.com, link.name);
+                log!(
+                    "Creating virtual port pair for {} ({})",
+                    link.com,
+                    link.name
+                );
                 setupc.install_pair(&link.com)?;
                 pairs = setupc.list()?;
                 pairs
                     .iter()
                     .find(|p| p.a_name().eq_ignore_ascii_case(&link.com))
                     .cloned()
-                    .with_context(|| format!("setupc ran, but no pair named {} appeared", link.com))?
+                    .with_context(|| {
+                        format!("setupc ran, but no pair named {} appeared", link.com)
+                    })?
             }
         };
         if !pair.b_hidden() {
@@ -275,7 +326,12 @@ pub fn reconcile(setupc: &Setupc, links: &[Link]) -> Result<Vec<String>> {
                 Err(e) => log!("Warning: could not hide {id}: {e:#}"),
             }
         }
-        log!("{} <-> {} ready for {}", link.com, pair.b_device(), link.name);
+        log!(
+            "{} <-> {} ready for {}",
+            link.com,
+            pair.b_device(),
+            link.name
+        );
         out.push(pair.b_device());
     }
     Ok(out)
@@ -284,7 +340,10 @@ pub fn reconcile(setupc: &Setupc, links: &[Link]) -> Result<Vec<String>> {
 /// Removes the pairs whose A side is one of these links' COM ports.
 pub fn remove_pairs(setupc: &Setupc, links: &[Link]) -> Result<()> {
     for p in setupc.list()? {
-        if links.iter().any(|l| p.a_name().eq_ignore_ascii_case(&l.com)) {
+        if links
+            .iter()
+            .any(|l| p.a_name().eq_ignore_ascii_case(&l.com))
+        {
             setupc.remove(p.index)?;
             log!("Removed virtual port pair {} ({})", p.index, p.a_name());
         }
@@ -293,7 +352,10 @@ pub fn remove_pairs(setupc: &Setupc, links: &[Link]) -> Result<()> {
 }
 
 fn com_in_use(com: &str) -> bool {
-    let n = com.get(3..).and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
+    let n = com
+        .get(3..)
+        .and_then(|n| n.parse::<u32>().ok())
+        .unwrap_or(0);
     comdb_reserved().contains(&n)
         || serialport::available_ports()
             .map(|ports| ports.iter().any(|p| p.port_name.eq_ignore_ascii_case(com)))
@@ -305,7 +367,12 @@ fn com_in_use(com: &str) -> bool {
 /// if asked to use one, so ComTap only offers numbers that aren't in here.
 pub fn comdb_reserved() -> Vec<u32> {
     let out = Command::new("reg")
-        .args(["query", r"HKLM\SYSTEM\CurrentControlSet\Control\COM Name Arbiter", "/v", "ComDB"])
+        .args([
+            "query",
+            r"HKLM\SYSTEM\CurrentControlSet\Control\COM Name Arbiter",
+            "/v",
+            "ComDB",
+        ])
         .output();
     let Ok(out) = out else { return Vec::new() };
     parse_comdb(&String::from_utf8_lossy(&out.stdout))
@@ -319,8 +386,9 @@ pub fn parse_comdb(reg_output: &str) -> Vec<u32> {
     else {
         return Vec::new();
     };
-    let bytes: Vec<u8> =
-        (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()).collect();
+    let bytes: Vec<u8> = (0..hex.len() / 2)
+        .filter_map(|i| u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok())
+        .collect();
     let mut out = Vec::new();
     for (i, b) in bytes.iter().enumerate() {
         for bit in 0..8 {
@@ -336,7 +404,11 @@ pub fn parse_comdb(reg_output: &str) -> Vec<u32> {
 pub fn free_ports(taken: &[String], limit: usize) -> Vec<String> {
     let reserved = comdb_reserved();
     let present: Vec<String> = serialport::available_ports()
-        .map(|v| v.into_iter().map(|p| p.port_name.to_ascii_uppercase()).collect())
+        .map(|v| {
+            v.into_iter()
+                .map(|p| p.port_name.to_ascii_uppercase())
+                .collect()
+        })
         .unwrap_or_default();
     (1..=255u32)
         .filter(|n| !reserved.contains(n))
@@ -350,7 +422,9 @@ pub fn free_ports(taken: &[String], limit: usize) -> Vec<String> {
 /// Windows prefers the newest version for new pairs, and com0com 3.0 is unsigned for x64,
 /// so a leftover 3.0 package makes every new pair fail with code 52.
 pub fn other_driver_packages() -> Vec<(String, String)> {
-    let Ok(out) = Command::new("pnputil").arg("/enum-drivers").output() else { return Vec::new() };
+    let Ok(out) = Command::new("pnputil").arg("/enum-drivers").output() else {
+        return Vec::new();
+    };
     parse_pnputil(&String::from_utf8_lossy(&out.stdout))
 }
 
@@ -367,7 +441,9 @@ pub fn parse_pnputil(text: &str) -> Vec<(String, String)> {
         if !field("Original Name").is_some_and(|n| n.eq_ignore_ascii_case("com0com.inf")) {
             continue;
         }
-        let (Some(oem), Some(ver)) = (field("Published Name"), field("Driver Version")) else { continue };
+        let (Some(oem), Some(ver)) = (field("Published Name"), field("Driver Version")) else {
+            continue;
+        };
         let ver = ver.split_whitespace().last().unwrap_or("").to_string();
         if ver != "2.2.2.0" {
             found.push((oem, ver));
@@ -377,9 +453,14 @@ pub fn parse_pnputil(text: &str) -> Vec<(String, String)> {
 }
 
 pub fn delete_driver_package(oem: &str) -> Result<()> {
-    let out = Command::new("pnputil").args(["/delete-driver", oem, "/uninstall", "/force"]).output()?;
+    let out = Command::new("pnputil")
+        .args(["/delete-driver", oem, "/uninstall", "/force"])
+        .output()?;
     if !out.status.success() {
-        bail!("pnputil /delete-driver {oem}: {}", String::from_utf8_lossy(&out.stdout).trim());
+        bail!(
+            "pnputil /delete-driver {oem}: {}",
+            String::from_utf8_lossy(&out.stdout).trim()
+        );
     }
     Ok(())
 }
@@ -409,7 +490,10 @@ mod tests {
         let out = "Microsoft PnP Utility\r\n\r\nPublished Name:     oem12.inf\r\nOriginal Name:      usbser.inf\r\nDriver Version:     01/01/2020 1.0.0.0\r\n\r\n\
                    Published Name:     oem362.inf\r\nOriginal Name:      com0com.inf\r\nProvider Name:      Vyacheslav Frolov\r\nDriver Version:     06/04/2012 3.0.0.0\r\n\r\n\
                    Published Name:     oem400.inf\r\nOriginal Name:      com0com.inf\r\nDriver Version:     01/25/2011 2.2.2.0\r\n";
-        assert_eq!(parse_pnputil(out), vec![("oem362.inf".to_string(), "3.0.0.0".to_string())]);
+        assert_eq!(
+            parse_pnputil(out),
+            vec![("oem362.inf".to_string(), "3.0.0.0".to_string())]
+        );
     }
 
     #[test]

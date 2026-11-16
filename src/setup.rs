@@ -57,14 +57,27 @@ pub const APPLY: Plan = Plan {
 
 pub const RESTART: Plan = Plan {
     title: "Restarting the service",
-    steps: &["Check administrator rights", "Stop the service", "Start the service", "Check each device connects"],
+    steps: &[
+        "Check administrator rights",
+        "Stop the service",
+        "Start the service",
+        "Check each device connects",
+    ],
 };
 
-pub const STOP: Plan = Plan { title: "Stopping the service", steps: &["Check administrator rights", "Stop the service"] };
+pub const STOP: Plan = Plan {
+    title: "Stopping the service",
+    steps: &["Check administrator rights", "Stop the service"],
+};
 
 pub const REPAIR: Plan = Plan {
     title: "Repairing virtual ports",
-    steps: &["Check administrator rights", "Stop the service", "Create the virtual COM ports", "Start the service"],
+    steps: &[
+        "Check administrator rights",
+        "Stop the service",
+        "Create the virtual COM ports",
+        "Start the service",
+    ],
 };
 
 pub const UNINSTALL: Plan = Plan {
@@ -104,7 +117,11 @@ fn check_admin() -> Result<St> {
 }
 
 fn ports_summary(links: &[Link]) -> String {
-    links.iter().map(|l| l.com.as_str()).collect::<Vec<_>>().join(", ")
+    links
+        .iter()
+        .map(|l| l.com.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn create_ports(links: &[Link]) -> Result<St> {
@@ -128,7 +145,9 @@ fn check_connects(links: &[Link]) -> Result<St> {
         let states: Vec<(String, String, Option<String>)> = links
             .iter()
             .map(|l| {
-                let s = st.as_ref().and_then(|s| s.links.iter().find(|x| x.com == l.com));
+                let s = st
+                    .as_ref()
+                    .and_then(|s| s.links.iter().find(|x| x.com == l.com));
                 (
                     format!("{} ({} ↔ {})", l.name, l.com, l.tcp),
                     s.map(|s| s.state.clone()).unwrap_or_default(),
@@ -191,9 +210,13 @@ pub fn install(cfg: &Config, rep: Rep) -> Result<()> {
         }
         done(format!("removed {}", removed.join(", ")))
     })?;
-    step(rep, 5, || match com0com::trust_publisher(&paths::installed_com0com()) {
-        Ok(()) => done(""),
-        Err(e) => Ok(St::Warn(format!("{e:#}. Windows may ask once to install the driver: click Install."))),
+    step(rep, 5, || {
+        match com0com::trust_publisher(&paths::installed_com0com()) {
+            Ok(()) => done(""),
+            Err(e) => Ok(St::Warn(format!(
+                "{e:#}. Windows may ask once to install the driver: click Install."
+            ))),
+        }
     })?;
     step(rep, 6, || create_ports(&cfg.links))?;
     step(rep, 7, || {
@@ -227,13 +250,21 @@ pub fn apply(new: &Config, rep: Rep) -> Result<()> {
         done("")
     })?;
     step(rep, 2, || {
-        let Some(old) = &old else { return Ok(St::Skip("nothing to remove".into())) };
-        let gone: Vec<Link> =
-            old.links.iter().filter(|o| !new.links.iter().any(|n| n.com == o.com)).cloned().collect();
+        let Some(old) = &old else {
+            return Ok(St::Skip("nothing to remove".into()));
+        };
+        let gone: Vec<Link> = old
+            .links
+            .iter()
+            .filter(|o| !new.links.iter().any(|n| n.com == o.com))
+            .cloned()
+            .collect();
         if gone.is_empty() {
             return Ok(St::Skip("nothing to remove".into()));
         }
-        let Ok(setupc) = com0com::Setupc::find() else { return Ok(St::Skip("com0com not set up".into())) };
+        let Ok(setupc) = com0com::Setupc::find() else {
+            return Ok(St::Skip("com0com not set up".into()));
+        };
         com0com::remove_pairs(&setupc, &gone)?;
         done(ports_summary(&gone))
     })?;
@@ -241,7 +272,13 @@ pub fn apply(new: &Config, rep: Rep) -> Result<()> {
         new.save(&paths::installed_config())?;
         done("")
     })?;
-    step(rep, 4, || if installed { create_ports(&new.links) } else { not_installed() })?;
+    step(rep, 4, || {
+        if installed {
+            create_ports(&new.links)
+        } else {
+            not_installed()
+        }
+    })?;
     step(rep, 5, || {
         if !installed {
             return not_installed();
@@ -249,12 +286,20 @@ pub fn apply(new: &Config, rep: Rep) -> Result<()> {
         service::start()?;
         done("")
     })?;
-    step(rep, 6, || if installed { check_connects(&new.links) } else { not_installed() })?;
+    step(rep, 6, || {
+        if installed {
+            check_connects(&new.links)
+        } else {
+            not_installed()
+        }
+    })?;
     Ok(())
 }
 
 fn current_links() -> Vec<Link> {
-    Config::load(&paths::installed_config()).map(|c| c.links).unwrap_or_default()
+    Config::load(&paths::installed_config())
+        .map(|c| c.links)
+        .unwrap_or_default()
 }
 
 pub fn restart(rep: Rep) -> Result<()> {
@@ -281,9 +326,13 @@ pub fn repair(rep: Rep) -> Result<()> {
 
 pub fn uninstall(keep_ports: bool, remove_driver: bool, rep: Rep) -> Result<()> {
     step(rep, 0, check_admin)?;
-    step(rep, 1, || service::delete().map(|_| St::Done(String::new())))?;
+    step(rep, 1, || {
+        service::delete().map(|_| St::Done(String::new()))
+    })?;
     step(rep, 2, || {
-        let Ok(setupc) = com0com::Setupc::find() else { return Ok(St::Skip("com0com not set up".into())) };
+        let Ok(setupc) = com0com::Setupc::find() else {
+            return Ok(St::Skip("com0com not set up".into()));
+        };
         if remove_driver {
             setupc.uninstall_driver()?;
             return done("removed the com0com driver and every com0com pair");
@@ -299,7 +348,10 @@ pub fn uninstall(keep_ports: bool, remove_driver: bool, rep: Rep) -> Result<()> 
         let _ = std::fs::remove_file(paths::shortcut());
         done("")
     })?;
-    log!("Uninstalled. Config, logs and traffic stay in {}", paths::data_dir().display());
+    log!(
+        "Uninstalled. Config, logs and traffic stay in {}",
+        paths::data_dir().display()
+    );
     Ok(())
 }
 

@@ -70,7 +70,13 @@ impl Traffic {
         Traffic {
             dir,
             com: com.to_string(),
-            inner: Mutex::new(Inner { pending: None, file: None, day: String::new(), size: 0, capped: false }),
+            inner: Mutex::new(Inner {
+                pending: None,
+                file: None,
+                day: String::new(),
+                size: 0,
+                capped: false,
+            }),
         }
     }
 
@@ -86,12 +92,20 @@ impl Traffic {
         }
         let mut g = self.inner.lock().unwrap();
         let now = Instant::now();
-        let split = g.pending.as_ref().is_some_and(|p| p.dir != dir || now.duration_since(p.last) > GAP);
+        let split = g
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.dir != dir || now.duration_since(p.last) > GAP);
         if split {
             self.flush(&mut g);
         }
         for &b in bytes {
-            let p = g.pending.get_or_insert_with(|| Pending { dir, start: Local::now(), last: now, data: Vec::new() });
+            let p = g.pending.get_or_insert_with(|| Pending {
+                dir,
+                start: Local::now(),
+                last: now,
+                data: Vec::new(),
+            });
             p.data.push(b);
             p.last = now;
             if b == b'\n' || p.data.len() >= MAX_ENTRY {
@@ -137,7 +151,11 @@ impl Traffic {
         if g.day != day || g.file.is_none() {
             prune(dir, &self.com, &day);
             let path = file_for(dir, &self.com, &day);
-            g.file = OpenOptions::new().create(true).append(true).open(&path).ok();
+            g.file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .ok();
             g.size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             g.capped = false;
             g.day = day;
@@ -147,8 +165,11 @@ impl Traffic {
         }
         let Some(f) = g.file.as_mut() else { return };
         if g.size >= CAP_BYTES {
-            let _ = writeln!(f, "{} -- traffic log reached 50 MB today; paused until tomorrow", Local::now()
-                .format("%Y-%m-%d %H:%M:%S%.3f"));
+            let _ = writeln!(
+                f,
+                "{} -- traffic log reached 50 MB today; paused until tomorrow",
+                Local::now().format("%Y-%m-%d %H:%M:%S%.3f")
+            );
             g.capped = true;
             return;
         }
@@ -167,13 +188,20 @@ fn prune(dir: &Path, com: &str, today: &str) {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            let day = name.strip_prefix(&prefix)?.strip_suffix(".log")?.to_string();
+            let day = name
+                .strip_prefix(&prefix)?
+                .strip_suffix(".log")?
+                .to_string();
             Some((day, e.path(), e.metadata().map(|m| m.len()).unwrap_or(0)))
         })
         .collect();
     files.sort();
     let cutoff = chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d")
-        .map(|d| (d - chrono::Duration::days(KEEP_DAYS)).format("%Y-%m-%d").to_string())
+        .map(|d| {
+            (d - chrono::Duration::days(KEEP_DAYS))
+                .format("%Y-%m-%d")
+                .to_string()
+        })
         .unwrap_or_default();
     let mut total: u64 = files.iter().map(|f| f.2).sum();
     for (day, path, size) in &files {
@@ -188,8 +216,15 @@ fn prune(dir: &Path, com: &str, today: &str) {
 /// One parsed line of a traffic file, for the screen.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Line {
-    Data { time: String, dir: Dir, bytes: Vec<u8> },
-    Event { time: String, msg: String },
+    Data {
+        time: String,
+        dir: Dir,
+        bytes: Vec<u8>,
+    },
+    Event {
+        time: String,
+        msg: String,
+    },
 }
 
 pub fn parse_line(s: &str) -> Option<Line> {
@@ -200,7 +235,10 @@ pub fn parse_line(s: &str) -> Option<Line> {
     let time = s.get(11..23)?.to_string();
     let rest = s.get(24..)?;
     if let Some(msg) = rest.strip_prefix("-- ") {
-        return Some(Line::Event { time, msg: msg.to_string() });
+        return Some(Line::Event {
+            time,
+            msg: msg.to_string(),
+        });
     }
     let dir = match rest.get(..3)? {
         "RX " => Dir::Rx,
@@ -208,14 +246,20 @@ pub fn parse_line(s: &str) -> Option<Line> {
         _ => return None,
     };
     let hex = rest[3..].split(" | ").next().unwrap_or("");
-    Some(Line::Data { time, dir, bytes: codec::parse_hex(hex) })
+    Some(Line::Data {
+        time,
+        dir,
+        bytes: codec::parse_hex(hex),
+    })
 }
 
 /// The last `max_bytes` of today's file for this link, as parsed lines.
 pub fn tail(dir: &Path, com: &str, max_bytes: u64) -> (Vec<Line>, u64) {
     use std::io::{Read, Seek, SeekFrom};
     let day = Local::now().format("%Y-%m-%d").to_string();
-    let Ok(mut f) = File::open(file_for(dir, com, &day)) else { return (Vec::new(), 0) };
+    let Ok(mut f) = File::open(file_for(dir, com, &day)) else {
+        return (Vec::new(), 0);
+    };
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
     let start = len.saturating_sub(max_bytes);
     let _ = f.seek(SeekFrom::Start(start));
@@ -251,7 +295,9 @@ mod tests {
         t.event("disconnected: test");
         let (lines, _) = tail(&dir, "COM9", 1 << 20);
         assert_eq!(lines.len(), 5, "{lines:?}");
-        assert!(matches!(&lines[0], Line::Data { dir: Dir::Rx, bytes, .. } if bytes == b"0123\r\n"));
+        assert!(
+            matches!(&lines[0], Line::Data { dir: Dir::Rx, bytes, .. } if bytes == b"0123\r\n")
+        );
         assert!(matches!(&lines[1], Line::Data { bytes, .. } if bytes == b"4567\r\n"));
         assert!(matches!(&lines[2], Line::Data { bytes, .. } if bytes == b"AB"));
         assert!(matches!(&lines[3], Line::Data { dir: Dir::Tx, bytes, .. } if bytes == b"T\r"));

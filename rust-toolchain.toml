@@ -1,0 +1,6 @@
+# The one Rust version for local builds and CI. Bump it deliberately: newer clippy
+# releases add lints, and pinning keeps a local `cargo clippy` identical to CI's.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

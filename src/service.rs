@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use windows_service::service::{
-    ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept, ServiceErrorControl,
-    ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo, ServiceStartType, ServiceState,
-    ServiceStatus, ServiceType,
+    ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
+    ServiceErrorControl, ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod,
+    ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
 };
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
@@ -17,13 +17,15 @@ use windows_service::{define_windows_service, service_dispatcher};
 
 pub const NAME: &str = "ComTap";
 const DISPLAY: &str = "ComTap (TCP device to virtual COM port)";
-const DESCRIPTION: &str = "Bridges TCP devices, such as Ethernet barcode scanners, to com0com virtual COM ports.";
+const DESCRIPTION: &str =
+    "Bridges TCP devices, such as Ethernet barcode scanners, to com0com virtual COM ports.";
 
 define_windows_service!(ffi_service_main, service_main);
 
 /// Called when Windows starts `comtap.exe service`.
 pub fn dispatch() -> Result<()> {
-    service_dispatcher::start(NAME, ffi_service_main).context("not started by the Service Control Manager")
+    service_dispatcher::start(NAME, ffi_service_main)
+        .context("not started by the Service Control Manager")
 }
 
 fn service_main(_args: Vec<OsString>) {
@@ -69,12 +71,17 @@ fn run_service() -> Result<()> {
     };
     log!("Service stopped");
     // A non-zero exit code makes Windows apply the restart-on-failure actions.
-    handle.set_service_status(status(ServiceState::Stopped, ServiceControlAccept::empty(), code))?;
+    handle.set_service_status(status(
+        ServiceState::Stopped,
+        ServiceControlAccept::empty(),
+        code,
+    ))?;
     Ok(())
 }
 
 fn manager(access: ServiceManagerAccess) -> Result<ServiceManager> {
-    ServiceManager::local_computer(None::<&str>, access).context("opening the Service Control Manager")
+    ServiceManager::local_computer(None::<&str>, access)
+        .context("opening the Service Control Manager")
 }
 
 /// True if this process can create services (i.e. is running as administrator).
@@ -106,7 +113,10 @@ pub fn install(exe: &Path) -> Result<()> {
         Err(_) => m.create_service(&info, access)?,
     };
     svc.set_description(DESCRIPTION)?;
-    let restart = ServiceAction { action_type: ServiceActionType::Restart, delay: Duration::from_secs(5) };
+    let restart = ServiceAction {
+        action_type: ServiceActionType::Restart,
+        delay: Duration::from_secs(5),
+    };
     svc.update_failure_actions(ServiceFailureActions {
         reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86400)),
         reboot_msg: None,
@@ -164,7 +174,10 @@ pub fn delete() -> Result<()> {
 
 pub fn is_installed() -> bool {
     manager(ServiceManagerAccess::CONNECT)
-        .and_then(|m| m.open_service(NAME, ServiceAccess::QUERY_STATUS).map_err(Into::into))
+        .and_then(|m| {
+            m.open_service(NAME, ServiceAccess::QUERY_STATUS)
+                .map_err(Into::into)
+        })
         .is_ok()
 }
 
@@ -179,7 +192,9 @@ pub fn driver_state_text() -> String {
 }
 
 fn query_text(name: &str) -> String {
-    let Ok(m) = manager(ServiceManagerAccess::CONNECT) else { return "unknown".into() };
+    let Ok(m) = manager(ServiceManagerAccess::CONNECT) else {
+        return "unknown".into();
+    };
     match m.open_service(name, ServiceAccess::QUERY_STATUS) {
         Ok(s) => match s.query_status() {
             Ok(st) => format!("{:?}", st.current_state),

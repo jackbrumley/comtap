@@ -47,11 +47,21 @@ impl Config {
         for l in &mut cfg.links {
             l.com = l.com.trim().to_ascii_uppercase();
             l.tcp = l.tcp.trim().to_string();
-            let n = l.com.strip_prefix("COM").and_then(|n| n.parse::<u32>().ok());
+            let n = l
+                .com
+                .strip_prefix("COM")
+                .and_then(|n| n.parse::<u32>().ok());
             if !matches!(n, Some(1..=255)) {
-                bail!("link '{}': com must look like COM5, got '{}'", l.name, l.com);
+                bail!(
+                    "link '{}': com must look like COM5, got '{}'",
+                    l.name,
+                    l.com
+                );
             }
-            let ok = l.tcp.rsplit_once(':').is_some_and(|(h, p)| !h.is_empty() && p.parse::<u16>().is_ok_and(|p| p > 0));
+            let ok = l
+                .tcp
+                .rsplit_once(':')
+                .is_some_and(|(h, p)| !h.is_empty() && p.parse::<u16>().is_ok_and(|p| p > 0));
             if !ok {
                 bail!("link '{}': tcp must be host:port, got '{}'", l.name, l.tcp);
             }
@@ -90,7 +100,9 @@ mod tests {
     fn normalises_and_rejects() {
         let c = Config::parse(r#"{"links":[{"name":"a","tcp":"1.2.3.4:5","com":" com7 "}]}"#);
         assert_eq!(c.unwrap().links[0].com, "COM7");
-        assert!(Config::parse(r#"{"links":[{"name":"a","tcp":"1.2.3.4:5","com":"COMX"}]}"#).is_err());
+        assert!(
+            Config::parse(r#"{"links":[{"name":"a","tcp":"1.2.3.4:5","com":"COMX"}]}"#).is_err()
+        );
         assert!(Config::parse(r#"{"links":[{"name":"a","tcp":"nohost","com":"COM5"}]}"#).is_err());
         assert!(Config::parse(r#"{"links":[]}"#).unwrap().links.is_empty());
         assert!(Config::parse(r#"{"links":[{"name":"a","tcp":"h:99999","com":"COM5"}]}"#).is_err());

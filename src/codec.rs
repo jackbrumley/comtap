@@ -1,8 +1,9 @@
 //! Byte formatting (hex / control-char text), the same as RawTap's.
 
 const CTRL: [&str; 32] = [
-    "NUL", "SOH", "STX", "ETX", "EOT", "ENQ", "ACK", "BEL", "BS", "HT", "LF", "VT", "FF", "CR", "SO", "SI", "DLE",
-    "DC1", "DC2", "DC3", "DC4", "NAK", "SYN", "ETB", "CAN", "EM", "SUB", "ESC", "FS", "GS", "RS", "US",
+    "NUL", "SOH", "STX", "ETX", "EOT", "ENQ", "ACK", "BEL", "BS", "HT", "LF", "VT", "FF", "CR",
+    "SO", "SI", "DLE", "DC1", "DC2", "DC3", "DC4", "NAK", "SYN", "ETB", "CAN", "EM", "SUB", "ESC",
+    "FS", "GS", "RS", "US",
 ];
 
 /// Text form of one byte: printable ASCII as-is, control chars as `<CR>`, others as `<0xFF>`.
@@ -16,7 +17,10 @@ pub fn byte_text(b: u8) -> String {
 }
 
 pub fn hex_string(data: &[u8]) -> String {
-    data.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
+    data.iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn text_string(data: &[u8]) -> String {
@@ -25,7 +29,9 @@ pub fn text_string(data: &[u8]) -> String {
 
 /// Parses "30 31 0D" back into bytes; stops at the first thing that isn't a hex pair.
 pub fn parse_hex(s: &str) -> Vec<u8> {
-    s.split_whitespace().map_while(|t| u8::from_str_radix(t, 16).ok()).collect()
+    s.split_whitespace()
+        .map_while(|t| u8::from_str_radix(t, 16).ok())
+        .collect()
 }
 
 #[cfg(test)]

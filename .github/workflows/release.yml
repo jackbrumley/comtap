@@ -156,40 +156,39 @@ jobs:
           Write-Host "Installed: $exe ($version)"
           if ($version -ne "comtap $($env:TAG.TrimStart('v'))") { exit 1 }
 
+      # A fake TCP device: sends a line every second to whoever connects. It runs
+      # as its own process: a Start-Job would die with this step's PowerShell.
+      - name: Start a fake TCP device
+        run: |
+          $device = Join-Path $env:RUNNER_TEMP "fake-device.ps1"
+          @'
+          $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 47001)
+          $listener.Start()
+          while ($true) {
+            $client = $listener.AcceptTcpClient()
+            $stream = $client.GetStream()
+            try {
+              while ($true) {
+                $bytes = [Text.Encoding]::ASCII.GetBytes("CI-TEST-123`r`n")
+                $stream.Write($bytes, 0, $bytes.Length)
+                Start-Sleep -Seconds 1
+              }
+            } catch { $client.Close() }
+          }
+          '@ | Set-Content -Path $device
+          Start-Process -FilePath pwsh -ArgumentList "-NoProfile", "-File", $device -WindowStyle Hidden
+
       - name: Set up a device end to end
         run: |
-          # A fake TCP device: sends a line every second to whoever connects.
-          Start-Job -Name device -ScriptBlock {
-            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 47001)
-            $listener.Start()
-            while ($true) {
-              $client = $listener.AcceptTcpClient()
-              $stream = $client.GetStream()
-              try {
-                while ($true) {
-                  $bytes = [Text.Encoding]::ASCII.GetBytes("CI-TEST-123`r`n")
-                  $stream.Write($bytes, 0, $bytes.Length)
-                  Start-Sleep -Seconds 1
-                }
-              } catch { $client.Close() }
-            }
-          } | Out-Null
           $config = Join-Path $env:RUNNER_TEMP "comtap_config.json"
           '{ "links": [ { "name": "CI device", "tcp": "127.0.0.1:47001", "com": "COM9" } ] }' | Set-Content -Path $config
           $exe = Join-Path $env:ProgramFiles "ComTap\comtap.exe"
           & $exe install --config $config
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          & $exe status
           if ((Get-Service ComTap).Status -ne "Running") { Write-Error "the ComTap service is not running"; exit 1 }
 
       - name: Data from the device arrives on the COM port
-        run: |
-          $port = [System.IO.Ports.SerialPort]::new("COM9")
-          $port.ReadTimeout = 15000
-          $port.Open()
-          try { $line = $port.ReadLine() } finally { $port.Close() }
-          Write-Host "COM9 received: $line"
-          if ($line -notmatch "CI-TEST-123") { exit 1 }
+        run: ./.github/scripts/read-com-port.ps1 -Port COM9 -Expect "CI-TEST-123"
 
       - name: Update in place (settings stay)
         run: |
@@ -198,6 +197,9 @@ jobs:
           if ((Get-Service ComTap).Status -ne "Running") { Write-Error "the service did not come back"; exit 1 }
           $config = Get-Content (Join-Path $env:ProgramData "ComTap\comtap_config.json") -Raw
           if ($config -notmatch "COM9") { Write-Error "the update lost the config"; exit 1 }
+
+      - name: Data still arrives after the update
+        run: ./.github/scripts/read-com-port.ps1 -Port COM9 -Expect "CI-TEST-123"
 
       - name: Uninstall
         run: |

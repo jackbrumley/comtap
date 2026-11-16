@@ -54,7 +54,7 @@ If a step fails, it shows × with the reason, and Enter goes back to the form to
 **After that:** the main screen.
 
 ```
- ComTap   ● SERVICE RUNNING   driver com0com Running                      VIEW ONLY · F2 admin
+ ComTap   ● SERVICE RUNNING   driver com0com Running               v1.1.2 VIEW ONLY · F2 admin
 ┌ Devices ───────────────────────────────────────────────────────────────────────────────────┐
 │ ► ● Dock 3 scanner      COM23  ↔ 10.1.128.186:51236     connected     last data 12:01:29   │
 │   ● Scale               COM24  ↔ 10.1.128.190:4001      retrying                           │
@@ -66,17 +66,18 @@ If a step fails, it shows × with the reason, and Enter goes back to the form to
 │12:01:40.002 TX HEX  54 0D                                                                  │
 │12:01:40.002 TX TEXT T<CR>                                                                  │
 └────────────────────────────────────────────────────────────────────────────────────────────┘
- F1 menu  ↑↓ device  Enter edit  A add  D delete  F8 format  PgUp/PgDn scroll  L logs  Q quit
+ F1 menu  ↑↓ device  Enter edit  A add  D delete  F8 format  PgUp/PgDn scroll  U updates  L logs  Q quit
 ```
 
 - **Anyone can view.** Changes need admin: ComTap offers to reopen itself as admin, straight back at what you chose.
 - **F1** opens the menu (type to filter): add, edit or delete a device, restart, stop or start the service, repair virtual ports, reinstall, uninstall, check for updates, open the log folder.
+- **U** checks for updates now; **L** opens the log folder. The top line shows the version you run.
 - **Any number of devices:** each gets its own COM port. One service runs them all.
 - Saving a device applies it straight away, with the same kind of checklist.
 
 ## Updates
 
-ComTap checks GitHub for a newer version each time the screen opens. When one is out, the header says so and a dialog offers it once. **F1 → Update to X.Y.Z** (or `comtap update`) downloads ComTap's update script from brumley.info and runs it (on Windows in its own window; on Linux in the same terminal). The script runs the same installer as a new install:
+ComTap checks GitHub for a newer version each time the screen opens. When one is out, the header says so and a dialog offers it once, as soon as nothing else is open on the screen. **F1 → Update to X.Y.Z** (or `comtap update`) downloads ComTap's update script from brumley.info and runs it (on Windows in its own window; on Linux in the same terminal). The script runs the same installer as a new install:
 
 1. asks for admin (UAC) or your password (`sudo`),
 2. downloads the new program and checks it against GitHub's SHA-256 digest,

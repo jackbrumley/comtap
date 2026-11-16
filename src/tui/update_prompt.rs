@@ -2,7 +2,9 @@
 //! current → latest with **Later**, **Release notes** and **Update now**. A check the user
 //! asked for that finds nothing new says "ComTap is up to date".
 //!
-//! The dialog opens by itself once a run, on the main screen, when nothing else is open.
+//! The dialog opens by itself once a run, on the main screen: at once if nothing else is open,
+//! otherwise as soon as the screen is free. U on the main screen, or F1 → Check for updates,
+//! checks by hand.
 use super::draw::{badge, centered_box, wrap_words};
 use super::*;
 use crate::update::{self, UpdateCheck};
@@ -19,6 +21,17 @@ impl App {
         }
     }
 
+    /// Opens a waiting update dialog once the main screen is free (no form, setup steps or
+    /// other dialog), so a check that finishes while the user is busy still offers it.
+    pub(super) fn show_update_offer(&mut self) {
+        if !matches!(self.screen, Screen::Main) || !matches!(self.overlay, Overlay::None) {
+            return;
+        }
+        if let Some(check) = self.update_offer.take() {
+            self.overlay = Overlay::Update { check, sel: 2 };
+        }
+    }
+
     /// Picks up a finished update check.
     pub(super) fn poll_update_check(&mut self) {
         let Some(rx) = &self.update_rx else { return };
@@ -31,10 +44,8 @@ impl App {
                 self.update = Some(check.clone());
                 if available && (self.update_manual || !self.update_prompted) {
                     self.update_prompted = true;
-                    if matches!(self.screen, Screen::Main) && matches!(self.overlay, Overlay::None)
-                    {
-                        self.overlay = Overlay::Update { check, sel: 2 };
-                    }
+                    self.update_offer = Some(check);
+                    self.show_update_offer();
                 } else if self.update_manual {
                     self.overlay = Overlay::Notice {
                         title: "ComTap is up to date".into(),

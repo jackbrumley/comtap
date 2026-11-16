@@ -235,3 +235,41 @@ fn shows_waiting_when_no_software_has_the_port() {
     assert!(s.contains("waiting for COM23"), "{s}");
     assert!(s.contains("No software has COM23 open"), "{s}");
 }
+
+#[test]
+fn header_shows_the_version_at_the_top_right() {
+    let s = render(&sample(), 110, 30);
+    let top = s.lines().next().unwrap();
+    let version = concat!("v", env!("CARGO_PKG_VERSION"));
+    assert!(top.contains(version), "{top}");
+    assert!(top.find(version) > top.find("SERVICE RUNNING"), "{top}");
+}
+
+#[test]
+fn update_dialog_waits_until_the_main_screen_is_free() {
+    let mut app = sample();
+    app.overlay = Overlay::Menu {
+        sel: 0,
+        filter: String::new(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(Ok(sample_update())).unwrap();
+    app.update_rx = Some(rx);
+    app.poll_update_check();
+    assert!(
+        matches!(app.overlay, Overlay::Menu { .. }),
+        "the menu was replaced"
+    );
+    app.overlay = Overlay::None;
+    app.show_update_offer();
+    assert!(
+        matches!(app.overlay, Overlay::Update { .. }),
+        "the update dialog did not open once the screen was free"
+    );
+    app.overlay = Overlay::None;
+    app.show_update_offer();
+    assert!(
+        matches!(app.overlay, Overlay::None),
+        "the dialog opened twice"
+    );
+}

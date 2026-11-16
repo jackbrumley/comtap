@@ -12,11 +12,11 @@ pub(super) fn badge(t: &str, bg: Color) -> Span<'static> {
     )
 }
 
-fn title(t: &str) -> Line<'static> {
+pub(super) fn title(t: &str) -> Line<'static> {
     Line::from(vec![badge("ComTap", ACCENT), Span::raw(format!(" {t} "))])
 }
 
-fn hints(t: &str) -> Line<'static> {
+pub(super) fn hints(t: &str) -> Line<'static> {
     Line::from(Span::styled(format!(" {t} "), DIM))
 }
 
@@ -88,163 +88,6 @@ impl App {
                 .block(block),
             area,
         );
-    }
-
-    fn draw_form(&self, fr: &mut Frame, f: &Form) {
-        let heading = match (f.install, f.idx) {
-            (true, _) => "Set up a device",
-            (false, None) => "Add a device",
-            (false, Some(_)) => "Edit device",
-        };
-        let action = if f.install {
-            format!(" to install ComTap and create {}", f.fields[F_COM])
-        } else {
-            " to save and apply".into()
-        };
-        // Lay out with the full height first, then shrink the box to fit the lines.
-        let inner_w = 80.min(fr.area().width).saturating_sub(2);
-
-        let mut lines: Vec<Line> = vec!["".into()];
-        let mut cursor = None;
-        for (i, label) in LABELS.iter().enumerate() {
-            let focused = i == f.focus;
-            let label_style = if focused {
-                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
-            } else {
-                Style::new()
-            };
-            let val_style = if focused {
-                Style::new().fg(Color::Black).bg(ACCENT)
-            } else {
-                Style::new().fg(Color::White)
-            };
-            let mut spans = vec![
-                Span::styled(
-                    if focused {
-                        format!(" {MARK} ")
-                    } else {
-                        "   ".into()
-                    },
-                    Style::new().fg(ACCENT),
-                ),
-                Span::styled(format!("{label:<14}"), label_style),
-            ];
-            let value = &f.fields[i];
-            if i == F_COM {
-                if focused {
-                    spans.push(Span::styled(format!("{LEFT} "), DIM));
-                }
-                let shown = if value.is_empty() {
-                    "none free".to_string()
-                } else {
-                    value.clone()
-                };
-                spans.push(Span::styled(format!(" {shown} "), val_style));
-                if focused {
-                    spans.push(Span::styled(format!(" {MARK}"), DIM));
-                }
-                spans.push(Span::styled(format!("  {} free", f.coms.len()), DIM));
-            } else {
-                let shown = if value.is_empty() && !focused {
-                    match i {
-                        F_HOST => "e.g. 192.168.1.50".to_string(),
-                        F_PORT => "e.g. 51236".to_string(),
-                        _ => String::new(),
-                    }
-                } else {
-                    value.clone()
-                };
-                let style = if value.is_empty() && !focused {
-                    DIM
-                } else {
-                    val_style
-                };
-                spans.push(Span::styled(format!(" {shown} "), style));
-                if focused {
-                    // (column, row) inside the box; placed once the box is sized.
-                    cursor = Some((
-                        3 + 14 + 1 + value.chars().count() as u16,
-                        lines.len() as u16,
-                    ));
-                }
-            }
-            lines.push(Line::from(spans));
-        }
-        if let Some(n) = &f.note {
-            lines.push("".into());
-            for r in wrap_words(n, inner_w.saturating_sub(6) as usize) {
-                lines.push(Line::from(Span::styled(
-                    format!("   {r}"),
-                    Style::new().fg(Color::Yellow),
-                )));
-            }
-        }
-        lines.push("".into());
-        lines.push(Line::from(Span::styled(
-            format!("   {}", "─".repeat(inner_w.saturating_sub(6) as usize)),
-            DIM,
-        )));
-        let mut rows = wrap_words(HELP[f.focus], inner_w.saturating_sub(6) as usize);
-        rows.resize(2, String::new());
-        for r in rows.into_iter().take(2) {
-            lines.push(Line::from(Span::styled(
-                format!("   {r}"),
-                Style::new().fg(Color::Gray),
-            )));
-        }
-        lines.push("".into());
-        lines.push(match (&f.test, &f.test_msg) {
-            (Some(_), _) => Line::from(Span::styled(
-                "   Testing the connection…",
-                Style::new().fg(Color::Yellow),
-            )),
-            (None, Some((true, m))) => Line::from(Span::styled(
-                format!("   {OK} {m}"),
-                Style::new().fg(Color::Green),
-            )),
-            (None, Some((false, m))) => Line::from(Span::styled(
-                format!("   {BAD} {m}"),
-                Style::new().fg(Color::LightRed),
-            )),
-            (None, None) => Line::from(Span::styled(
-                "   Press F5 to test the connection to the device.",
-                DIM,
-            )),
-        });
-        if matches!(&f.test_msg, Some((false, _))) && self.svc == "Running" {
-            lines.push(Line::from(Span::styled(
-                "   (Some devices accept only one connection. If ComTap is connected, a test can fail.)",
-                DIM,
-            )));
-        }
-        lines.push("".into());
-        lines.push(Line::from(vec![
-            "   Press ".into(),
-            badge("Enter", Color::Green),
-            action.into(),
-        ]));
-        if let Some(e) = &f.err {
-            lines.push("".into());
-            for r in wrap_words(e, inner_w.saturating_sub(6) as usize) {
-                lines.push(Line::from(Span::styled(
-                    format!("   {r}"),
-                    Style::new().fg(Color::LightRed),
-                )));
-            }
-        }
-        lines.push("".into());
-        let area = top_box(fr.area(), 80, lines.len() as u16 + 2);
-        fr.render_widget(Clear, area);
-        let block = Block::bordered()
-            .title(title(heading))
-            .title_bottom(hints(
-                "↑↓ move  ←→ change  type to edit  F5 test  Enter save  Esc back",
-            ))
-            .border_style(Style::new().fg(ACCENT));
-        fr.render_widget(Paragraph::new(lines).block(block), area);
-        if let Some((cx, cy)) = cursor.filter(|c| c.1 + 2 < area.height) {
-            fr.set_cursor_position((area.x + 1 + cx, area.y + 1 + cy));
-        }
     }
 
     fn draw_progress(&self, fr: &mut Frame, p: &Progress) {
@@ -402,14 +245,27 @@ impl App {
         } else {
             badge(words::VIEW_ONLY_BADGE, Color::Yellow)
         };
-        // Narrow window: the driver state is the first thing to go.
-        if spans.iter().map(|s| s.width()).sum::<usize>() + right.width() + 1 > head.width as usize
-        {
+        let mut version = Some(Span::styled(
+            concat!("v", env!("CARGO_PKG_VERSION"), " "),
+            DIM,
+        ));
+        let right_width =
+            |version: &Option<Span>| right.width() + version.as_ref().map_or(0, Span::width);
+        let fits = |spans: &[Span], version: &Option<Span>| {
+            spans.iter().map(Span::width).sum::<usize>() + right_width(version)
+                < head.width as usize
+        };
+        // Narrow window: the driver state is the first thing to go, then the version.
+        if !fits(&spans, &version) {
             spans.remove(3);
         }
-        let used: usize = spans.iter().map(|s| s.width()).sum();
-        let gap = (head.width as usize).saturating_sub(used + right.width());
+        if !fits(&spans, &version) {
+            version = None;
+        }
+        let used: usize = spans.iter().map(Span::width).sum();
+        let gap = (head.width as usize).saturating_sub(used + right_width(&version));
         spans.push(Span::raw(" ".repeat(gap)));
+        spans.extend(version);
         spans.push(right);
         fr.render_widget(Paragraph::new(Line::from(spans)), head);
 
@@ -515,7 +371,7 @@ impl App {
         };
         fr.render_widget(Paragraph::new(m), msg);
         fr.render_widget(
-            Paragraph::new(hints("F1 menu  ↑↓ device  Enter edit  A add  D delete  F8 format  PgUp/PgDn scroll  L logs  Q quit")),
+            Paragraph::new(hints("F1 menu  ↑↓ device  Enter edit  A add  D delete  F8 format  PgUp/PgDn scroll  U updates  L logs  Q quit")),
             foot,
         );
 
@@ -673,7 +529,7 @@ pub(super) fn centered_box(full: Rect, w: u16, h: u16) -> Rect {
 }
 
 /// A box centred across, pinned near the top (like RawTap's setup box).
-fn top_box(full: Rect, w: u16, h: u16) -> Rect {
+pub(super) fn top_box(full: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(full.width);
     let h = h.min(full.height);
     let top = if full.height >= h + 2 { 1 } else { 0 };

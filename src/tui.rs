@@ -9,6 +9,7 @@ use crate::traffic::{self, Dir};
 use crate::update::UpdateCheck;
 use crate::{codec, paths, ports, service, status};
 use anyhow::Result;
+use form::{F_COM, F_HOST, F_NAME, F_PORT, Form, host_of, port_of};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -57,33 +58,6 @@ impl Fmt {
             Fmt::Text => "text",
         }
     }
-}
-
-const F_NAME: usize = 0;
-const F_HOST: usize = 1;
-const F_PORT: usize = 2;
-const F_COM: usize = 3;
-const LABELS: [&str; 4] = ["Name", "Device IP", "TCP port", words::PORT_LABEL];
-const HELP: [&str; 4] = [
-    "A label for this device, shown on this screen and in the logs. For example: Dock 3 scanner.",
-    "The device's IP address or network name. ComTap connects to it as a TCP client.",
-    "The TCP port the device sends its data on. You find it in the device's network settings.",
-    words::PORT_HELP,
-];
-
-struct Form {
-    /// None = a new device.
-    idx: Option<usize>,
-    fields: [String; 4],
-    focus: usize,
-    coms: Vec<String>,
-    /// True when ComTap isn't installed yet: Enter installs.
-    install: bool,
-    /// Something ComTap changed for you, e.g. a reserved COM port swapped for a free one.
-    note: Option<String>,
-    err: Option<String>,
-    test: Option<Receiver<(bool, String)>>,
-    test_msg: Option<(bool, String)>,
 }
 
 /// Where to go when a progress screen is closed.
@@ -186,8 +160,10 @@ struct App {
     update: Option<UpdateCheck>,
     /// The running check was asked for by the user.
     update_manual: bool,
-    /// The dialog has opened by itself this run.
+    /// The dialog has been offered by itself this run.
     update_prompted: bool,
+    /// An update dialog waiting for the main screen to be free.
+    update_offer: Option<UpdateCheck>,
     last_checked: Option<String>,
     /// Set when the user chose Update now: `run` starts the installer after the screen closes.
     start_update: bool,
@@ -213,6 +189,20 @@ pub fn run(open: Option<String>, update_failed: bool) -> Result<()> {
         crate::update::run_update().map_err(anyhow::Error::msg)?;
     }
     Ok(())
+}
+
+/// Opens a folder in the file manager (Explorer, or the desktop's via xdg-open).
+fn open_folder(folder: &std::path::Path) -> std::result::Result<(), String> {
+    let opener = if cfg!(windows) {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(folder)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not open {}: {e}", folder.display()))
 }
 
 fn load_config() -> (Config, Option<String>) {
@@ -259,6 +249,7 @@ impl App {
             update: None,
             update_manual: false,
             update_prompted: false,
+            update_offer: None,
             last_checked: None,
             start_update: false,
         }
@@ -338,6 +329,7 @@ impl App {
 
     fn refresh(&mut self) {
         self.poll_update_check();
+        self.show_update_offer();
         if let Screen::Progress(p) = &mut self.screen {
             while let Ok(m) = p.rx.try_recv() {
                 match m {
@@ -423,473 +415,6 @@ impl App {
     }
 
     // ---------------------------------------------------------------- keys
-
-    fn key(&mut self, k: KeyEvent) {
-        let ctrl_c =
-            k.code == KeyCode::Char('c') && k.modifiers.contains(event::KeyModifiers::CONTROL);
-        match std::mem::replace(&mut self.screen, Screen::Main) {
-            Screen::Welcome => self.key_welcome(k),
-            Screen::Form(f) => self.key_form(f, k),
-            Screen::Progress(p) => self.key_progress(p, k),
-            Screen::Main => {
-                if ctrl_c {
-                    self.quit = true;
-                } else {
-                    self.key_main(k);
-                }
-            }
-        }
-    }
-
-    fn key_welcome(&mut self, k: KeyEvent) {
-        match k.code {
-            KeyCode::Enter if self.admin => self.screen = self.setup_form(),
-            KeyCode::Enter => match setup::relaunch_as_admin("setup") {
-                Ok(()) => self.quit = true,
-                Err(e) => {
-                    self.fail(format!("{e:#}"));
-                    self.screen = Screen::Welcome;
-                }
-            },
-            KeyCode::Esc | KeyCode::Char('q') => self.quit = true,
-            _ => self.screen = Screen::Welcome,
-        }
-    }
-
-    fn key_progress(&mut self, p: Progress, k: KeyEvent) {
-        let Some(result) = &p.result else {
-            self.screen = Screen::Progress(p); // still working: ignore keys
-            return;
-        };
-        if !matches!(k.code, KeyCode::Enter | KeyCode::Esc) {
-            self.screen = Screen::Progress(p);
-            return;
-        }
-        self.reload();
-        match (result, p.after) {
-            (Err(e), After::FormOnFail { idx, link, install }) => {
-                let mut f = self.form(idx);
-                f.fields[F_NAME] = link.name.clone();
-                f.fields[F_HOST] = host_of(&link.tcp);
-                f.fields[F_PORT] = port_of(&link.tcp);
-                if f.coms.contains(&link.com) {
-                    f.fields[F_COM] = link.com.clone();
-                    f.note = None;
-                } else if f.note.is_none() {
-                    f.note = Some(format!(
-                        "{} is reserved by another device on this PC, so I picked {}. Use ←→ to choose another.",
-                        link.com, f.fields[F_COM]
-                    ));
-                }
-                f.install = install && !self.installed;
-                f.err = Some(e.clone());
-                self.screen = Screen::Form(f);
-            }
-            (Err(e), _) => {
-                self.fail(format!("{} stopped: {e}", p.plan.title));
-                self.screen = Screen::Main;
-            }
-            (Ok(()), _) => {
-                self.say(format!("{}: done.", p.plan.title));
-                self.screen = Screen::Main;
-            }
-        }
-    }
-
-    fn menu_items(&self) -> Vec<(Act, String, &'static str, bool)> {
-        // (action, label, key hint, needs admin)
-        let mut v = vec![(Act::Add, "Add a device".to_string(), "A", true)];
-        if !self.cfg.links.is_empty() {
-            v.push((Act::Edit, "Edit this device".into(), "Enter", true));
-            v.push((Act::Delete, "Delete this device".into(), "D", true));
-        }
-        if !self.installed {
-            v.push((Act::Install, "Install ComTap".into(), "", true));
-        } else {
-            v.push((Act::Restart, "Restart the service".into(), "", true));
-            if self.svc == "Running" {
-                v.push((Act::Stop, "Stop the service".into(), "", true));
-            } else {
-                v.push((Act::Start, "Start the service".into(), "", true));
-            }
-            v.push((Act::Repair, "Repair virtual COM ports".into(), "", true));
-            v.push((Act::Install, "Reinstall ComTap".into(), "", true));
-            v.push((Act::Uninstall, "Uninstall ComTap".into(), "", true));
-        }
-        if let Some(u) = self.update.as_ref().filter(|u| u.update_available) {
-            v.push((
-                Act::UpdateNow,
-                format!("Update to {}", u.latest_version),
-                "",
-                false,
-            ));
-        }
-        let checked = match (&self.update_rx, &self.last_checked) {
-            (Some(_), _) => " (checking…)".to_string(),
-            (None, Some(t)) => format!(" (last checked {t})"),
-            (None, None) => String::new(),
-        };
-        v.push((
-            Act::CheckUpdates,
-            format!("Check for updates{checked}"),
-            "",
-            false,
-        ));
-        v.push((Act::Folder, "Open the log folder".into(), "L", false));
-        v.push((
-            Act::Format,
-            format!("Traffic format: {}", self.fmt.name()),
-            "F8",
-            false,
-        ));
-        v.push((Act::Quit, "Quit".into(), "Q", false));
-        v
-    }
-
-    fn filtered_menu(&self, filter: &str) -> Vec<(Act, String, &'static str, bool)> {
-        let f = filter.to_lowercase();
-        self.menu_items()
-            .into_iter()
-            .filter(|i| i.1.to_lowercase().contains(&f))
-            .collect()
-    }
-
-    fn open_name(&self, act: Act) -> String {
-        match act {
-            Act::Add => "add".into(),
-            Act::Edit => format!("edit:{}", self.sel),
-            _ => "menu".into(),
-        }
-    }
-
-    fn run_act(&mut self, act: Act, needs_admin: bool) {
-        if needs_admin && !self.admin {
-            self.overlay = Overlay::Admin {
-                open: self.open_name(act),
-            };
-            return;
-        }
-        self.overlay = Overlay::None;
-        match act {
-            Act::Add => self.screen = Screen::Form(self.form(None)),
-            Act::Edit if !self.cfg.links.is_empty() => {
-                self.screen = Screen::Form(self.form(Some(self.sel)))
-            }
-            Act::Delete if !self.cfg.links.is_empty() => {
-                self.overlay = Overlay::ConfirmDelete(self.sel)
-            }
-            Act::Install => {
-                if self.cfg.links.is_empty() {
-                    self.screen = Screen::Form(self.form(None));
-                } else {
-                    let cfg = self.cfg.clone();
-                    let note = ports_note(&cfg.links);
-                    self.start_plan(&setup::INSTALL, After::Main, note, move |r| {
-                        setup::install(&cfg, r)
-                    });
-                }
-            }
-            Act::Restart | Act::Start => {
-                self.start_plan(&setup::RESTART, After::Main, String::new(), setup::restart)
-            }
-            Act::Stop => self.start_plan(&setup::STOP, After::Main, String::new(), setup::stop),
-            Act::Repair => {
-                self.start_plan(&setup::REPAIR, After::Main, String::new(), setup::repair)
-            }
-            Act::Uninstall => self.overlay = Overlay::ConfirmUninstall,
-            Act::UpdateNow => self.begin_update(),
-            Act::CheckUpdates => self.start_update_check(true),
-            Act::Folder => {
-                let _ = std::process::Command::new("explorer")
-                    .arg(paths::data_dir())
-                    .spawn();
-            }
-            Act::Format => self.fmt = self.fmt.next(),
-            Act::Quit => self.quit = true,
-            _ => {}
-        }
-    }
-
-    fn key_main(&mut self, k: KeyEvent) {
-        match std::mem::replace(&mut self.overlay, Overlay::None) {
-            Overlay::None => {}
-            Overlay::Menu { sel, mut filter } => {
-                let items = self.filtered_menu(&filter);
-                match k.code {
-                    KeyCode::Esc | KeyCode::F(1) => {}
-                    KeyCode::Up => {
-                        self.overlay = Overlay::Menu {
-                            sel: sel.saturating_sub(1),
-                            filter,
-                        }
-                    }
-                    KeyCode::Down => {
-                        self.overlay = Overlay::Menu {
-                            sel: (sel + 1).min(items.len().saturating_sub(1)),
-                            filter,
-                        }
-                    }
-                    KeyCode::Enter => {
-                        if let Some(i) = items.get(sel) {
-                            self.run_act(i.0, i.3);
-                        }
-                    }
-                    KeyCode::Left | KeyCode::Right
-                        if items.get(sel).is_some_and(|i| i.0 == Act::Format) =>
-                    {
-                        self.fmt = self.fmt.next();
-                        self.overlay = Overlay::Menu { sel, filter };
-                    }
-                    KeyCode::Backspace => {
-                        filter.pop();
-                        self.overlay = Overlay::Menu { sel: 0, filter };
-                    }
-                    KeyCode::Char(c) => {
-                        filter.push(c);
-                        self.overlay = Overlay::Menu { sel: 0, filter };
-                    }
-                    _ => self.overlay = Overlay::Menu { sel, filter },
-                }
-                return;
-            }
-            Overlay::Admin { open } => {
-                if k.code == KeyCode::Enter {
-                    match setup::relaunch_as_admin(&open) {
-                        Ok(()) => self.quit = true,
-                        Err(e) => self.fail(format!("{e:#}. Still view only.")),
-                    }
-                }
-                return;
-            }
-            Overlay::ConfirmDelete(i) => {
-                if k.code == KeyCode::Enter {
-                    let mut new = self.cfg.clone();
-                    let gone = new.links.remove(i);
-                    self.sel = self.sel.saturating_sub(1);
-                    let note = format!("{} ({}) deleted.", gone.name, gone.com);
-                    self.start_plan(&setup::APPLY, After::Main, note, move |r| {
-                        setup::apply(&new, r)
-                    });
-                }
-                return;
-            }
-            Overlay::Update { check, sel } => {
-                self.key_update_prompt(check, sel, k);
-                return;
-            }
-            Overlay::Notice { title, lines } => {
-                if !matches!(k.code, KeyCode::Enter | KeyCode::Esc) {
-                    self.overlay = Overlay::Notice { title, lines };
-                }
-                return;
-            }
-            Overlay::ConfirmUninstall => {
-                if k.code == KeyCode::Enter {
-                    self.start_plan(&setup::UNINSTALL, After::Main, String::new(), |r| {
-                        setup::uninstall(false, false, r)
-                    });
-                }
-                return;
-            }
-        }
-        let n = self.cfg.links.len();
-        match k.code {
-            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => self.quit = true,
-            KeyCode::F(1) | KeyCode::Char('s') | KeyCode::Char('S') => {
-                self.overlay = Overlay::Menu {
-                    sel: 0,
-                    filter: String::new(),
-                }
-            }
-            KeyCode::F(2) if !self.admin => {
-                self.overlay = Overlay::Admin {
-                    open: "menu".into(),
-                }
-            }
-            KeyCode::Up if self.sel > 0 => {
-                self.sel -= 1;
-                self.scroll = 0;
-            }
-            KeyCode::Down if self.sel + 1 < n => {
-                self.sel += 1;
-                self.scroll = 0;
-            }
-            KeyCode::F(8) => self.fmt = self.fmt.next(),
-            KeyCode::PageUp => self.scroll += 10,
-            KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
-            KeyCode::End => self.scroll = 0,
-            KeyCode::Home => self.scroll = usize::MAX / 2,
-            KeyCode::Char('l') | KeyCode::Char('L') => self.run_act(Act::Folder, false),
-            KeyCode::Enter => self.run_act(if n == 0 { Act::Add } else { Act::Edit }, true),
-            KeyCode::Char('a') | KeyCode::Char('A') => self.run_act(Act::Add, true),
-            KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete if n > 0 => {
-                self.run_act(Act::Delete, true)
-            }
-            _ => {}
-        }
-    }
-
-    fn form(&self, idx: Option<usize>) -> Form {
-        let (name, host, port, com) = match idx.and_then(|i| self.cfg.links.get(i)) {
-            Some(l) => (
-                l.name.clone(),
-                host_of(&l.tcp),
-                port_of(&l.tcp),
-                l.com.clone(),
-            ),
-            None => (
-                format!("Device {}", self.cfg.links.len() + 1),
-                String::new(),
-                String::new(),
-                String::new(),
-            ),
-        };
-        let taken: Vec<String> = self
-            .cfg
-            .links
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| Some(*i) != idx)
-            .map(|(_, l)| l.com.clone())
-            .collect();
-        let mut coms = ports::free_ports(&taken, 40);
-        let mut note = None;
-        let mut com = com;
-        if !com.is_empty() && !coms.contains(&com) {
-            if self.installed && idx.is_some() {
-                // An installed device's port is reserved by its own pair: keep it on offer.
-                coms.insert(0, com.clone());
-            } else {
-                let first = coms.first().cloned().unwrap_or_default();
-                note = Some(format!(
-                    "{com} is reserved by another device on this PC, so I picked {first}. Use ←→ to choose another."
-                ));
-                com = first;
-            }
-        }
-        if com.is_empty() {
-            com = coms.first().cloned().unwrap_or_default();
-        }
-        Form {
-            idx,
-            fields: [name, host, port, com],
-            focus: if idx.is_none() { F_HOST } else { F_NAME },
-            coms,
-            install: !self.installed,
-            note,
-            err: None,
-            test: None,
-            test_msg: None,
-        }
-    }
-
-    fn key_form(&mut self, mut f: Form, k: KeyEvent) {
-        let back = |app: &mut App| {
-            if app.installed || !app.cfg.links.is_empty() {
-                app.screen = Screen::Main;
-            } else {
-                app.screen = Screen::Welcome;
-            }
-        };
-        match k.code {
-            KeyCode::Esc => {
-                back(self);
-                return;
-            }
-            KeyCode::Up | KeyCode::BackTab => f.focus = (f.focus + 3) % 4,
-            KeyCode::Down | KeyCode::Tab => f.focus = (f.focus + 1) % 4,
-            KeyCode::Left | KeyCode::Right if f.focus == F_COM && !f.coms.is_empty() => {
-                let pos = f
-                    .coms
-                    .iter()
-                    .position(|c| *c == f.fields[F_COM])
-                    .unwrap_or(0);
-                let n = f.coms.len();
-                let next = if k.code == KeyCode::Right {
-                    (pos + 1) % n
-                } else {
-                    (pos + n - 1) % n
-                };
-                f.fields[F_COM] = f.coms[next].clone();
-                f.note = None;
-            }
-            KeyCode::Backspace if f.focus != F_COM => {
-                f.fields[f.focus].pop();
-            }
-            KeyCode::Char(c) if f.focus != F_COM => {
-                let ok = match f.focus {
-                    F_PORT => c.is_ascii_digit() && f.fields[F_PORT].len() < 5,
-                    F_HOST => !c.is_whitespace(),
-                    _ => true,
-                };
-                if ok {
-                    f.fields[f.focus].push(c);
-                    f.test_msg = None;
-                }
-            }
-            KeyCode::F(5) => {
-                let addr = format!("{}:{}", f.fields[F_HOST].trim(), f.fields[F_PORT].trim());
-                let (tx, rx) = channel();
-                std::thread::spawn(move || {
-                    let _ = tx.send(test_connect(&addr));
-                });
-                f.test = Some(rx);
-                f.test_msg = None;
-            }
-            KeyCode::Enter => {
-                if f.fields[F_HOST].trim().is_empty() {
-                    f.err = Some("Enter the device's IP address.".into());
-                    f.focus = F_HOST;
-                } else if f.fields[F_PORT].trim().is_empty() {
-                    f.err = Some("Enter the device's TCP port.".into());
-                    f.focus = F_PORT;
-                } else if f.fields[F_COM].is_empty() {
-                    f.err = Some("No free COM port found.".into());
-                } else {
-                    let link = Link {
-                        name: if f.fields[F_NAME].trim().is_empty() {
-                            "Device".into()
-                        } else {
-                            f.fields[F_NAME].trim().to_string()
-                        },
-                        tcp: format!("{}:{}", f.fields[F_HOST].trim(), f.fields[F_PORT].trim()),
-                        com: f.fields[F_COM].clone(),
-                    };
-                    let mut new = self.cfg.clone();
-                    match f.idx {
-                        Some(i) => new.links[i] = link.clone(),
-                        None => new.links.push(link.clone()),
-                    }
-                    match new.validate() {
-                        Ok(()) => {
-                            if f.idx.is_none() {
-                                self.sel = new.links.len() - 1;
-                            }
-                            let after = After::FormOnFail {
-                                idx: f.idx,
-                                link,
-                                install: f.install,
-                            };
-                            let note = ports_note(&new.links);
-                            if f.install {
-                                self.start_plan(&setup::INSTALL, after, note, move |r| {
-                                    setup::install(&new, r)
-                                });
-                            } else {
-                                self.start_plan(&setup::APPLY, after, note, move |r| {
-                                    setup::apply(&new, r)
-                                });
-                            }
-                            return;
-                        }
-                        Err(e) => f.err = Some(format!("{e:#}")),
-                    }
-                }
-            }
-            _ => {}
-        }
-        self.screen = Screen::Form(f);
-    }
 }
 
 // ---------------------------------------------------------------- helpers
@@ -897,41 +422,6 @@ impl App {
 fn ports_note(links: &[Link]) -> String {
     let ports: Vec<&str> = links.iter().map(|l| l.com.as_str()).collect();
     format!("Your software can now open {}.", ports.join(", "))
-}
-
-fn host_of(tcp: &str) -> String {
-    tcp.rsplit_once(':')
-        .map(|(h, _)| h)
-        .unwrap_or(tcp)
-        .to_string()
-}
-
-fn port_of(tcp: &str) -> String {
-    tcp.rsplit_once(':')
-        .map(|(_, p)| p)
-        .unwrap_or("")
-        .to_string()
-}
-
-fn test_connect(addr: &str) -> (bool, String) {
-    let t0 = Instant::now();
-    let addrs = match addr.to_socket_addrs() {
-        Ok(a) => a.collect::<Vec<_>>(),
-        Err(e) => return (false, format!("Cannot find {addr}: {e}")),
-    };
-    let mut last = format!("Cannot find {addr}");
-    for a in addrs {
-        match TcpStream::connect_timeout(&a, Duration::from_secs(3)) {
-            Ok(_) => {
-                return (
-                    true,
-                    format!("{addr} answered in {} ms", t0.elapsed().as_millis()),
-                );
-            }
-            Err(e) => last = format!("{addr}: {e}"),
-        }
-    }
-    (false, last)
 }
 
 fn trunc(s: &str, n: usize) -> String {
@@ -945,6 +435,8 @@ fn trunc(s: &str, n: usize) -> String {
 }
 
 mod draw;
+mod form;
+mod keys;
 mod traffic_view;
 mod update_prompt;
 mod words;

@@ -17,8 +17,6 @@ the Release and Update Standard (see `AGENTS.md`).
   RFC 3339 timestamps and `[time] LEVEL: message` lines through the `log`
   crate, and a configurable level.
 - **F1 → Debug (§4):** Copy log, Open log, Copy system info, Log level.
-- **Split `src/tui.rs`** (over the 600-line soft budget): move the device
-  form into `src/tui/form.rs`.
 
 ## Ideas / Parking Lot
 

@@ -143,8 +143,10 @@ necessary `#[allow]` carries a comment saying why.
   script (`docs/update.sh` / `docs/update.ps1`).
 - `src/config.rs`, `src/paths.rs`, `src/logger.rs`: config, every on-disk
   location, the daily log.
-- `src/tui.rs`: the screen's state and keys (welcome, device form, progress,
-  main screen, F1 menu); `src/tui/draw.rs` draws them,
+- `src/tui.rs`: the screen's state and its loop (welcome, device form,
+  progress, main screen, F1 menu); `src/tui/keys.rs` the keys and the F1
+  menu's actions; `src/tui/form.rs` the device form (keys, connection test,
+  drawing); `src/tui/draw.rs` draws the other screens,
   `src/tui/traffic_view.rs` formats traffic, `src/tui/update_prompt.rs` is
   the update check and dialog, `src/tui/tests.rs` draws every screen into a
   test terminal.

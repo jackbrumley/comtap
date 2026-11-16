@@ -161,6 +161,23 @@ impl Pair {
     pub fn b_hidden(&self) -> bool {
         param(&self.b, "HiddenMode").is_some_and(|v| v.eq_ignore_ascii_case("yes"))
     }
+
+    /// Side B's RI pin follows "side A is open", so ComTap can tell when the software has the port.
+    pub fn b_ri_open(&self) -> bool {
+        param(&self.b, "ri").is_some_and(|v| v.eq_ignore_ascii_case("ropen"))
+    }
+}
+
+/// Side B's settings: hidden from port lists, and RI on while the software has side A open.
+const B_PARAMS: &str = "HiddenMode=yes,ri=ropen";
+
+/// ComTap's side of one pair, as `reconcile` leaves it.
+#[derive(Debug, Clone)]
+pub struct Port {
+    /// The path ComTap opens, e.g. `\\.\CNCB0`.
+    pub path: String,
+    /// True when RI reports whether the software has the COM port open.
+    pub open_signal: bool,
 }
 
 /// Parses `setupc list` output, e.g.
@@ -251,8 +268,11 @@ impl Setupc {
     }
 
     pub fn install_pair(&self, com: &str) -> Result<()> {
-        let a = format!("PortName={com}");
-        self.run(&["install", &a, "PortName=-,HiddenMode=yes"])?;
+        // EmuOverrun on side A: if the software stops reading, data is dropped
+        // (as on a real serial line) instead of blocking ComTap's writes.
+        let a = format!("PortName={com},EmuOverrun=yes");
+        let b = format!("PortName=-,{B_PARAMS}");
+        self.run(&["install", &a, &b])?;
         Ok(())
     }
 
@@ -275,7 +295,7 @@ impl Setupc {
 
 /// Makes sure each link has its pair, creating or fixing pairs as needed.
 /// Returns the device path ComTap should open for each link, in config order.
-pub fn reconcile(setupc: &Setupc, links: &[Link]) -> Result<Vec<String>> {
+pub fn reconcile(setupc: &Setupc, links: &[Link]) -> Result<Vec<Port>> {
     let mut pairs = setupc.list()?;
     let mut out = Vec::new();
     for link in links {
@@ -319,11 +339,17 @@ pub fn reconcile(setupc: &Setupc, links: &[Link]) -> Result<Vec<String>> {
                     })?
             }
         };
-        if !pair.b_hidden() {
+        // Only side B (ComTap's, closed at this point) is changed on existing pairs;
+        // side A may be open in the software, and changing it would restart it.
+        let mut open_signal = pair.b_ri_open();
+        if !pair.b_hidden() || !open_signal {
             let id = format!("CNCB{}", pair.index);
-            match setupc.change(&id, "HiddenMode=yes") {
-                Ok(()) => log!("Hid {id} (ComTap's side of {})", link.com),
-                Err(e) => log!("Warning: could not hide {id}: {e:#}"),
+            match setupc.change(&id, B_PARAMS) {
+                Ok(()) => {
+                    log!("Set {id} (ComTap's side of {}): {B_PARAMS}", link.com);
+                    open_signal = true;
+                }
+                Err(e) => log!("Warning: could not set {B_PARAMS} on {id}: {e:#}"),
             }
         }
         log!(
@@ -332,7 +358,10 @@ pub fn reconcile(setupc: &Setupc, links: &[Link]) -> Result<Vec<String>> {
             pair.b_device(),
             link.name
         );
-        out.push(pair.b_device());
+        out.push(Port {
+            path: pair.b_device(),
+            open_signal,
+        });
     }
     Ok(out)
 }
@@ -507,6 +536,18 @@ mod tests {
         assert!(!p[1].b_hidden());
         assert_eq!(p[2].index, 3);
         assert_eq!(p[2].b_device(), r"\\.\MYPORT");
+    }
+
+    #[test]
+    fn reads_ri_open_setting() {
+        let p = parse_list(
+            "CNCA0 PortName=COM5,EmuOverrun=yes
+CNCB0 PortName=-,HiddenMode=yes,ri=ropen
+",
+        );
+        assert!(p[0].b_hidden());
+        assert!(p[0].b_ri_open());
+        assert!(!parse_list(LIST)[0].b_ri_open());
     }
 
     #[test]

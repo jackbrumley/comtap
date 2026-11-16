@@ -193,6 +193,9 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           if ((Get-Service ComTap).Status -ne "Running") { Write-Error "the ComTap service is not running"; exit 1 }
 
+      - name: No software on the COM port (data dropped, stays connected)
+        run: ./.github/scripts/check-idle-port.ps1 -Port COM9
+
       - name: Data from the device arrives on the COM port
         run: ./.github/scripts/read-com-port.ps1 -Port COM9 -Expect "CI-TEST-123"
 
@@ -203,6 +206,9 @@ jobs:
           if ((Get-Service ComTap).Status -ne "Running") { Write-Error "the service did not come back"; exit 1 }
           $config = Get-Content (Join-Path $env:ProgramData "ComTap\comtap_config.json") -Raw
           if ($config -notmatch "COM9") { Write-Error "the update lost the config"; exit 1 }
+
+      - name: No software on the COM port after the update
+        run: ./.github/scripts/check-idle-port.ps1 -Port COM9
 
       - name: Data still arrives after the update
         run: ./.github/scripts/read-com-port.ps1 -Port COM9 -Expect "CI-TEST-123"

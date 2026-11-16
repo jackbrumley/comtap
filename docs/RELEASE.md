@@ -47,9 +47,10 @@ Pushing the tag starts the **Release** workflow
    SHA-256 digest.
 4. **Install test** installs the pre-release with the installer scripts from
    the tag on a fresh Windows runner, then: sets up a device end to end (the
-   com0com driver, a virtual port, the service) with a fake TCP device and
-   reads its data from the COM port; updates in place and checks the service
-   and config survive; uninstalls.
+   com0com driver, a virtual port, the service) with a fake TCP device;
+   checks that with no software on the port ComTap stays connected and drops
+   the data quietly; reads the data from the COM port; updates in place and
+   checks the service and config survive; uninstalls.
 
 Follow it with:
 ```bash

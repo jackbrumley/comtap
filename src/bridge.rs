@@ -1,5 +1,6 @@
 //! Copies bytes both ways between ComTap's side of a virtual port pair and a TCP device,
 //! and keeps reconnecting until told to stop.
+use crate::com0com::Port;
 use crate::config::Link;
 use crate::log;
 use crate::status::{Shared, now, set_state};
@@ -18,11 +19,46 @@ const POLL: Duration = Duration::from_millis(100);
 /// Anything ComTap can bridge to TCP: the virtual COM port, or a socket in tests.
 pub trait Device: Read + Write + Send {
     fn try_clone_dev(&self) -> io::Result<Box<dyn Device>>;
+    /// Whether the software has the COM port open; None when ComTap can't tell.
+    fn software_open(&mut self) -> Option<bool> {
+        None
+    }
 }
 
-impl Device for Box<dyn serialport::SerialPort> {
+/// ComTap's side of a pair. With `open_signal`, its RI pin is on while the software has the port open.
+struct ComSide {
+    port: Box<dyn serialport::SerialPort>,
+    open_signal: bool,
+}
+
+impl Read for ComSide {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.port.read(buf)
+    }
+}
+
+impl Write for ComSide {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.port.write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.port.flush()
+    }
+}
+
+impl Device for ComSide {
     fn try_clone_dev(&self) -> io::Result<Box<dyn Device>> {
-        Ok(Box::new(self.try_clone().map_err(io::Error::other)?))
+        Ok(Box::new(ComSide {
+            port: self.port.try_clone().map_err(io::Error::other)?,
+            open_signal: self.open_signal,
+        }))
+    }
+    fn software_open(&mut self) -> Option<bool> {
+        if self.open_signal {
+            self.port.read_ring_indicator().ok()
+        } else {
+            None
+        }
     }
 }
 
@@ -39,6 +75,61 @@ fn is_timeout(e: &io::Error) -> bool {
     )
 }
 
+/// A write to the COM side that went nowhere because the software isn't reading.
+/// A timed-out serial write reports 0 bytes, which `write_all` turns into WriteZero.
+fn is_dropped_write(e: &io::Error) -> bool {
+    is_timeout(e) || e.kind() == ErrorKind::WriteZero
+}
+
+/// Watches whether the software has the COM port open, and reports changes.
+struct OpenWatch {
+    name: String,
+    com: String,
+    st: Shared,
+    traffic: Arc<Traffic>,
+    last: Option<bool>,
+    checked: Option<Instant>,
+}
+
+impl OpenWatch {
+    fn new(link: &Link, st: &Shared, traffic: &Arc<Traffic>) -> OpenWatch {
+        OpenWatch {
+            name: link.name.clone(),
+            com: link.com.clone(),
+            st: st.clone(),
+            traffic: traffic.clone(),
+            last: None,
+            checked: None,
+        }
+    }
+
+    fn check(&mut self, dev: &mut dyn Device) {
+        if self
+            .checked
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(500))
+        {
+            return;
+        }
+        self.checked = Some(Instant::now());
+        let open = dev.software_open();
+        self.st.lock().unwrap().software_open = open;
+        if open == self.last {
+            return;
+        }
+        self.last = open;
+        let msg = match open {
+            Some(true) => format!("{} opened by software", self.com),
+            Some(false) => format!(
+                "{} is not open in any software; data from the device is dropped until it is",
+                self.com
+            ),
+            None => return,
+        };
+        log!("[{}] {msg}", self.name);
+        self.traffic.event(&msg);
+    }
+}
+
 /// Sleeps up to `dur`, waking early on stop.
 pub fn nap(dur: Duration, stop: &AtomicBool) {
     let end = Instant::now() + dur;
@@ -48,13 +139,8 @@ pub fn nap(dur: Duration, stop: &AtomicBool) {
 }
 
 /// Runs one link for ever: opens the COM side, then keeps the TCP side connected.
-pub fn run_link(
-    link: Link,
-    device_path: String,
-    stop: Arc<AtomicBool>,
-    st: Shared,
-    traffic: Arc<Traffic>,
-) {
+pub fn run_link(link: Link, com: Port, stop: Arc<AtomicBool>, st: Shared, traffic: Arc<Traffic>) {
+    let device_path = com.path;
     let mut last_err = String::new();
     while !stop.load(Ordering::Relaxed) {
         let opened = serialport::new(&device_path, 115_200).timeout(POLL).open();
@@ -81,7 +167,11 @@ pub fn run_link(
             link.name,
             link.com
         );
-        if let Err(e) = run_with_device(&link, Box::new(port), &stop, &st, &traffic) {
+        let dev = ComSide {
+            port,
+            open_signal: com.open_signal,
+        };
+        if let Err(e) = run_with_device(&link, Box::new(dev), &stop, &st, &traffic) {
             let msg = format!("{device_path} failed: {e}");
             log!("[{}] {msg}. Reopening.", link.name);
             traffic.event(&msg);
@@ -116,10 +206,16 @@ fn tune(tcp: &TcpStream) {
 
 /// Reads and drops whatever the software sends while the device is offline, for `dur`.
 /// Returns Err if the COM side itself fails.
-fn drain(dev: &mut dyn Device, dur: Duration, stop: &AtomicBool) -> io::Result<()> {
+fn drain(
+    dev: &mut dyn Device,
+    dur: Duration,
+    stop: &AtomicBool,
+    watch: &mut OpenWatch,
+) -> io::Result<()> {
     let end = Instant::now() + dur;
     let mut buf = [0u8; 1024];
     while !stop.load(Ordering::Relaxed) && Instant::now() < end {
+        watch.check(dev);
         match dev.read(&mut buf) {
             Ok(0) => std::thread::sleep(POLL),
             Ok(_) => {}
@@ -140,6 +236,8 @@ pub fn run_with_device(
 ) -> io::Result<()> {
     let mut backoff = BACKOFF_START;
     let mut last_err = String::new();
+    let mut watch = OpenWatch::new(link, st, traffic);
+    watch.check(dev.as_mut());
     while !stop.load(Ordering::Relaxed) {
         set_state(st, "connecting", None);
         let tcp = match connect(&link.tcp) {
@@ -152,7 +250,7 @@ pub fn run_with_device(
                     last_err = msg.clone();
                 }
                 set_state(st, "retrying", Some(msg));
-                drain(dev.as_mut(), backoff, stop)?;
+                drain(dev.as_mut(), backoff, stop, &mut watch)?;
                 backoff = (backoff * 2).min(BACKOFF_MAX);
                 continue;
             }
@@ -165,12 +263,12 @@ pub fn run_with_device(
         log!("[{}] Connected to {}", link.name, link.tcp);
         traffic.event(&format!("connected to {}", link.tcp));
 
-        let reason = session(link, dev.as_mut(), tcp, stop, st, traffic)?;
+        let reason = session(link, dev.as_mut(), tcp, stop, st, traffic, &mut watch)?;
         if !stop.load(Ordering::Relaxed) {
             log!("[{}] Disconnected from {}: {reason}", link.name, link.tcp);
             traffic.event(&format!("disconnected: {reason}"));
             set_state(st, "retrying", Some(format!("disconnected: {reason}")));
-            drain(dev.as_mut(), BACKOFF_START, stop)?;
+            drain(dev.as_mut(), BACKOFF_START, stop, &mut watch)?;
         }
     }
     Ok(())
@@ -184,6 +282,7 @@ fn session(
     stop: &AtomicBool,
     st: &Shared,
     traffic: &Arc<Traffic>,
+    watch: &mut OpenWatch,
 ) -> io::Result<String> {
     let done = Arc::new(AtomicBool::new(false));
     let dev_failed: Arc<std::sync::Mutex<Option<io::Error>>> = Arc::default();
@@ -196,6 +295,7 @@ fn session(
         let dev_failed = dev_failed.clone();
         let st = st.clone();
         let name = link.name.clone();
+        let com = link.com.clone();
         let traffic = traffic.clone();
         std::thread::spawn(move || -> String {
             let mut buf = [0u8; 4096];
@@ -213,14 +313,18 @@ fn session(
                             s.last_rx = Some(now());
                         }
                         traffic.record(Dir::Rx, &buf[..n]);
+                        // No software has the port open: nowhere to send it (OpenWatch logs this).
+                        if dev_w.software_open() == Some(false) {
+                            continue;
+                        }
                         match dev_w.write_all(&buf[..n]) {
                             Ok(()) => {}
-                            // The software isn't reading (or has the port closed): drop rather than stall.
-                            Err(e) if is_timeout(&e) => {
+                            // The software isn't reading: drop rather than stall or reconnect.
+                            Err(e) if is_dropped_write(&e) => {
                                 dropped += n as u64;
                                 if dropped == n as u64 || dropped % 4096 < n as u64 {
                                     log!(
-                                        "[{name}] COM side not reading; dropped {dropped} bytes so far"
+                                        "[{name}] {com} software isn't reading; dropped {dropped} bytes so far"
                                     );
                                 }
                             }
@@ -244,6 +348,7 @@ fn session(
     let mut buf = [0u8; 4096];
     let mut my_reason = None;
     while !done.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
+        watch.check(dev);
         match dev.read(&mut buf) {
             Ok(0) => std::thread::sleep(POLL),
             Ok(n) => match tcp_w.write_all(&buf[..n]) {
@@ -385,6 +490,101 @@ mod tests {
         let (mut conn, _) = scanner.accept().unwrap();
         conn.write_all(b"LATE\r\n").unwrap();
         assert_eq!(read_exact_timeout(&mut software, 6), b"LATE\r\n");
+
+        stop.store(true, Ordering::Relaxed);
+        t.join().unwrap().unwrap();
+    }
+
+    /// A COM side whose software can be open or closed, and can stop reading.
+    #[derive(Clone, Default)]
+    struct FakeCom {
+        open: Arc<AtomicBool>,
+        stalled: Arc<AtomicBool>,
+        got: Arc<std::sync::Mutex<Vec<u8>>>,
+    }
+
+    impl Read for FakeCom {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            std::thread::sleep(POLL);
+            Err(ErrorKind::TimedOut.into())
+        }
+    }
+
+    impl Write for FakeCom {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            assert!(self.open.load(Ordering::Relaxed), "wrote to a closed port");
+            if self.stalled.load(Ordering::Relaxed) {
+                return Ok(0); // what a timed-out serial write reports
+            }
+            self.got.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Device for FakeCom {
+        fn try_clone_dev(&self) -> io::Result<Box<dyn Device>> {
+            Ok(Box::new(self.clone()))
+        }
+        fn software_open(&mut self) -> Option<bool> {
+            Some(self.open.load(Ordering::Relaxed))
+        }
+    }
+
+    #[test]
+    fn closed_or_stalled_software_drops_data_and_stays_connected() {
+        let scanner = TcpListener::bind("127.0.0.1:0").unwrap();
+        let link = Link {
+            name: "idle".into(),
+            tcp: scanner.local_addr().unwrap().to_string(),
+            com: "COM97".into(),
+        };
+        let com = FakeCom::default();
+        let stop = Arc::new(AtomicBool::new(false));
+        let st: Shared = Arc::default();
+        let t = {
+            let (link, stop, st, com) = (link.clone(), stop.clone(), st.clone(), com.clone());
+            std::thread::spawn(move || {
+                run_with_device(
+                    &link,
+                    Box::new(com),
+                    &stop,
+                    &st,
+                    &Arc::new(Traffic::disabled()),
+                )
+            })
+        };
+        let (mut conn, _) = scanner.accept().unwrap();
+        let wait_rx = |n: u64| {
+            let end = Instant::now() + Duration::from_secs(5);
+            while st.lock().unwrap().rx_bytes < n {
+                assert!(Instant::now() < end, "data never arrived");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        };
+
+        // No software has the port open: scans are dropped, nothing is written.
+        conn.write_all(b"one\r\n").unwrap();
+        wait_rx(5);
+        assert_eq!(st.lock().unwrap().software_open, Some(false));
+
+        // Software opens the port but doesn't read: writes go nowhere, still no reconnect.
+        com.open.store(true, Ordering::Relaxed);
+        com.stalled.store(true, Ordering::Relaxed);
+        conn.write_all(b"two\r\n").unwrap();
+        wait_rx(10);
+
+        // Software reads again: data flows on the same connection.
+        com.stalled.store(false, Ordering::Relaxed);
+        conn.write_all(b"three\r\n").unwrap();
+        wait_rx(17);
+        assert_eq!(com.got.lock().unwrap().as_slice(), b"three\r\n");
+        let s = st.lock().unwrap().clone();
+        assert_eq!(s.connects, 1, "reconnected: {:?}", s.last_error);
+        assert_eq!(s.software_open, Some(true));
 
         stop.store(true, Ordering::Relaxed);
         t.join().unwrap().unwrap();

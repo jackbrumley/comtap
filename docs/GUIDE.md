@@ -120,7 +120,8 @@ comtap --version
 | Device off, unplugged or rebooting | It reconnects with backoff from 0.5 s up to 30 s, for ever. The COM port stays open the whole time, so the software never sees it vanish. |
 | Device dies silently | TCP keepalive notices within about 30 s and reconnects. |
 | Software sends data while the device is offline | The data is read and dropped, so the software never blocks. |
-| Software not reading | Device data is dropped, as a real serial line would, and logged. |
+| No software has the COM port open | ComTap stays connected to the device and drops its data. The screen shows "waiting for COMx" and the traffic log notes when software opens or closes the port. |
+| Software has the port open but isn't reading | Device data is dropped, as a real serial line would, and logged. The connection stays up. |
 | Service crashes | Windows restarts it after 5 s. |
 
 The virtual port raises DSR, CTS and DCD, so the software sees a "device attached" the way it would on a real cable.

@@ -196,3 +196,35 @@ fn sample_update() -> UpdateCheck {
         release_url: "https://github.com/jackbrumley/comtap/releases/tag/v1.0.1".into(),
     }
 }
+
+#[test]
+fn enter_opens_edit_form() {
+    let mut app = sample();
+    app.admin = true;
+    app.key(KeyEvent::new(KeyCode::Enter, event::KeyModifiers::NONE));
+    assert!(
+        matches!(app.screen, Screen::Form(_)),
+        "Enter did not open the form"
+    );
+}
+
+#[test]
+fn shows_waiting_when_no_software_has_the_port() {
+    let mut app = sample();
+    app.status = Some(StatusFile {
+        written: String::new(),
+        written_unix: chrono::Local::now().timestamp(),
+        pid: 0,
+        links: vec![status::LinkStatus {
+            name: "Dock 3 scanner".into(),
+            com: "COM23".into(),
+            tcp: "10.1.128.186:51236".into(),
+            state: "connected".into(),
+            software_open: Some(false),
+            ..Default::default()
+        }],
+    });
+    let s = render(&app, 110, 30);
+    assert!(s.contains("waiting for COM23"), "{s}");
+    assert!(s.contains("No software has COM23 open"), "{s}");
+}

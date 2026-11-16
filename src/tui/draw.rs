@@ -430,11 +430,14 @@ impl App {
         }
         for (i, l) in self.cfg.links.iter().enumerate() {
             let st = self.link_status(l);
+            let unopened =
+                st.is_some_and(|s| s.state == "connected" && s.software_open == Some(false));
             let (state, color) = match st.map(|s| s.state.as_str()) {
-                Some("connected") => ("connected", Color::Green),
-                Some(s @ ("retrying" | "connecting" | "starting")) => (s, Color::Yellow),
-                Some(s) => (s, Color::LightRed),
-                None => ("service not running", Color::DarkGray),
+                Some("connected") if unopened => (format!("waiting for {}", l.com), Color::Yellow),
+                Some("connected") => ("connected".into(), Color::Green),
+                Some(s @ ("retrying" | "connecting" | "starting")) => (s.into(), Color::Yellow),
+                Some(s) => (s.into(), Color::LightRed),
+                None => ("service not running".into(), Color::DarkGray),
             };
             let selected = i == self.sel;
             let mut spans = vec![
@@ -472,7 +475,15 @@ impl App {
                 }
             }
             lines.push(Line::from(spans));
-            if selected {
+            if selected && unopened {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "       No software has {} open. Data from the device is dropped until one does.",
+                        l.com
+                    ),
+                    Style::new().fg(Color::Yellow),
+                )));
+            } else if selected {
                 if let Some(e) = st.and_then(|s| s.last_error.clone()) {
                     lines.push(Line::from(Span::styled(
                         format!("       {e}"),

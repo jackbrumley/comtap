@@ -20,6 +20,9 @@ pub struct LinkStatus {
     /// Bytes from the COM port to the device.
     pub tx_bytes: u64,
     pub connects: u64,
+    /// Whether software has the COM port open; None when ComTap can't tell.
+    #[serde(default)]
+    pub software_open: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -237,6 +237,14 @@ fn show_status() -> Result<()> {
         println!();
         println!("{}  {} <-> {}", l.name, l.com, l.tcp);
         println!("  state     {} since {}", l.state, l.since);
+        match l.software_open {
+            Some(true) => println!("  software  has {} open", l.com),
+            Some(false) => println!(
+                "  software  none has {} open (device data is dropped)",
+                l.com
+            ),
+            None => {}
+        }
         if let Some(e) = &l.last_error {
             println!("  last err  {e}");
         }

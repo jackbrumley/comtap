@@ -51,6 +51,8 @@ pub(super) fn entry_lines(l: &traffic::Line, width: u16, fmt: Fmt) -> Vec<Line<'
             let lower = msg.to_lowercase();
             let (mark, style) = if lower.starts_with("connected") {
                 (OK, Style::new().fg(Color::Green))
+            } else if lower.contains("dropped") {
+                ("!", Style::new().fg(Color::Yellow))
             } else if lower.contains("disconnected")
                 || lower.contains("cannot")
                 || lower.contains("failed")

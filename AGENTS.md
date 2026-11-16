@@ -1,8 +1,10 @@
 # ComTap Agent Guidelines
 
 Instructions for AI coding agents (and humans) working in this repository.
-ComTap is a terminal app (Rust, ratatui) and Windows service that makes a
-network (TCP) device show up as a COM port, using com0com virtual port pairs.
+ComTap is a terminal app (Rust, ratatui) and service that makes a network
+(TCP) device show up as a serial port: on Windows a COM port from com0com
+virtual port pairs and a Windows service; on Linux a pseudo-terminal linked at
+/dev/<name> and a systemd service.
 It follows two shared standards, which together are the core reference for
 every app (Voquill, Rusty G6, SomeDrive, Yambuck, RawTap, ComTap):
 
@@ -60,8 +62,10 @@ warnings:
 3. `cargo clippy --all-targets -- -D warnings`
 4. `cargo test`
 
-CI (`.github/workflows/ci.yml`, Windows) runs the same checks plus a syntax
-check of the PowerShell installers. Dead code is deleted, not silenced; a
+CI (`.github/workflows/ci.yml`, Windows and Linux) runs the same checks on
+both, plus syntax checks of the installers (PowerShell parser; `bash -n` and
+`shellcheck`). Check both platforms before a commit that touches
+platform code: on Windows, and on Linux (WSL works). Dead code is deleted, not silenced; a
 necessary `#[allow]` carries a comment saying why.
 
 ### File Size Budget
@@ -88,6 +92,13 @@ necessary `#[allow]` carries a comment saying why.
 - **Child PowerShell:** always through `com0com::powershell`, which clears
   `PSModulePath`; started from PowerShell 7, Windows PowerShell 5.1 otherwise
   loads 7's modules and fails.
+- **Platform code:** keep it behind `#[cfg(windows)]` / `#[cfg(not(windows))]`
+  in its own module (`com0com.rs`, `pty.rs`, `service.rs` /
+  `service_linux.rs`, `setup/windows.rs` / `setup/linux.rs`, `tui/words.rs`),
+  with `ports.rs` as the one place the rest of the code asks for a port.
+- **Linux ports:** the pty master reports a hang-up while no program has the
+  slave open; reads then fail with EIO. Treat both as "software not open",
+  never as a port failure, and pace the loop (poll returns at once).
 - **Glyphs:** only characters the default console font (Consolas) has:
   `► ◄ ↔ √ ×`, not `▶ ⇄ ✔ ✘`.
 - **Silent failures:** log every error (`log!`, into the daily log) and,
@@ -111,9 +122,15 @@ necessary `#[allow]` carries a comment saying why.
   device's bridge for the service and `comtap run`.
 - `src/setup.rs`: install, apply, restart, stop, repair and uninstall as
   named step plans, shown as a checklist on screen and printed on the
-  command line; the desktop shortcut and reopening as admin.
+  command line. The per-platform plans are in `src/setup/windows.rs` (also
+  the desktop shortcut, PATH and reopening as admin) and `src/setup/linux.rs`
+  (the binary in /usr/local/bin, and reopening with sudo).
 - `src/service.rs`: the Windows service (registration, start/stop, the
-  entry point Windows calls).
+  entry point Windows calls). `src/service_linux.rs`: the same functions for
+  the systemd unit, and the SIGTERM handler.
+- `src/ports.rs`: the one interface to a device's virtual port (prepare,
+  open, free names, the name the software opens). `src/pty.rs`: the Linux
+  ports (a pty per device, raw mode, the serial-port group, the /dev link).
 - `src/com0com.rs`: drives com0com through `setupc.exe`: deploys the
   embedded files, creates, repairs and hides port pairs, reads ComDB for free
   COM numbers, removes other com0com driver versions.
@@ -140,6 +157,7 @@ necessary `#[allow]` carries a comment saying why.
 - `docs/`: served by GitHub Pages at `https://brumley.info/comtap/`: the
   install page (`index.html`, using the shared files from
   `https://brumley.info/shared/v1/`), `install.ps1`, `uninstall.ps1`,
+  `install.sh`, `uninstall.sh`,
   `assets/icon.png`; also `GUIDE.md`, `RELEASE.md` and `TODO.md`. Promotion
   to `main` deploys them.
 
@@ -151,30 +169,38 @@ necessary `#[allow]` carries a comment saying why.
   start-up environment, modals or toasts. Messages go to the message line.
 - **Checks:** no frontend, so no `typecheck`, `lint` or frontend build. The
   root `package.json` holds only repository scripts and has no version.
-- **Settings storage:** `C:\ProgramData\ComTap`, not `~/.config/comtap`: the
-  service runs as SYSTEM and every user's screen reads the same config and
-  status. The config is `comtap_config.json`; the screen writes it.
-- **Logging:** daily logs `logs\comtap-YYYY-MM-DD.log` (14 days), written by
-  the service and the screen; the session log format is in `docs/TODO.md`.
+- **Settings storage:** `C:\ProgramData\ComTap` on Windows and
+  `/etc/comtap` + `/var/lib/comtap` on Linux, not `~/.config/comtap`: the
+  service runs as SYSTEM or root and every user's screen reads the same
+  config and status. The config is `comtap_config.json`; the screen writes it.
+- **Logging:** daily logs `comtap-YYYY-MM-DD.log` (14 days) in
+  `C:\ProgramData\ComTap\logs` or `/var/log/comtap`, written by the service
+  and the screen; the session log format is in `docs/TODO.md`.
 
 ### From the Release and Update Standard
 
 - **Identity:** app ID `info.brumley.comtap`, binary `comtap`, environment
   prefix `COMTAP`, install site `https://brumley.info/comtap` (GitHub Pages
-  from `main:/docs`). Platform: Windows x64.
+  from `main:/docs`). Platforms: Windows x64 and Linux x64.
 - **Version file:** only `Cargo.toml`.
-- **Packaging:** one asset, `comtap-X.Y.Z-windows-x64.exe`. The exe is its own
-  installer (the setup screen installs the driver, ports, service and
-  shortcut), so there is no setup.exe or MSI.
-- **Install modes:** one, system-wide, because ComTap installs a driver and a
-  service. `install.ps1` asks for admin (UAC) itself; there is no
-  `install-system.ps1` or `-System`. On a PC with the service installed it
-  stops the service, swaps the exe and runs `comtap install` (settings
-  stay); otherwise it opens the setup screen.
-- **Update log:** `C:\ProgramData\ComTap\logs\update.log`.
+- **Packaging:** two assets, `comtap-X.Y.Z-windows-x64.exe` and
+  `comtap-X.Y.Z-linux-x64` (a static musl binary). Each is its own installer
+  (the setup screen installs the service, and on Windows the driver, ports
+  and shortcut), so there is no setup.exe, MSI, .deb, .rpm or AppImage.
+- **Install modes:** one, system-wide, because ComTap installs a service
+  (and on Windows a driver). `install.ps1` asks for admin (UAC) itself;
+  `install.sh` uses sudo; there is no `install-system.ps1`, `-System`,
+  AppImage or user install. On a PC with the service installed they stop the
+  service, swap the program and run `comtap install` (settings stay);
+  otherwise they open the setup screen. `install.sh` also adds the user to
+  the serial-port group.
+- **Update log:** `C:\ProgramData\ComTap\logs\update.log` or
+  `/var/log/comtap/update.log`.
 - **In-app update:** the standard's "Terminal apps" flow (`src/update.rs`):
   a background check at start-up, the "Update available" dialog once a run,
-  F1 → Update to X.Y.Z / Check for updates, `comtap update`. The installer
-  runs in its own console window and ComTap exits.
+  F1 → Update to X.Y.Z / Check for updates, `comtap update`. On Windows the
+  installer runs in its own console window and ComTap exits; on Linux ComTap
+  leaves its screen and replaces itself with `install.sh` in the same
+  terminal.
 - **Release procedure:** follow `docs/RELEASE.md`. Never run
   `npm run release:promote` unless the maintainer asks.

@@ -72,13 +72,18 @@ fn progress(
     })
 }
 
+/// Install checklist states: steps before `upto` done, `upto` (or the last step) as `last`.
 fn install_states(upto: usize, last: St) -> Vec<St> {
-    let mut v = vec![St::Pending; setup::INSTALL.steps.len()];
+    let n = setup::INSTALL.steps.len();
+    let upto = upto.min(n - 1);
+    let mut v = vec![St::Pending; n];
     for s in v.iter_mut().take(upto) {
         *s = St::Done(String::new());
     }
-    v[1] = St::Done(r"C:\ProgramData\ComTap\comtap_config.json".into());
-    v[4] = St::Skip("none found".into());
+    v[1] = St::Done(paths::installed_config().display().to_string());
+    if cfg!(windows) {
+        v[4] = St::Skip("none found".into());
+    }
     v[upto] = last;
     v
 }
@@ -161,8 +166,10 @@ fn show_screens() {
                 &setup::INSTALL,
                 {
                     let mut s = install_states(10, St::Done("1 connected".into()));
-                    s[2] = St::Done(r"C:\Program Files\ComTap\comtap.exe".into());
-                    s[6] = St::Done("COM23".into());
+                    s[2] = St::Done(paths::installed_exe().display().to_string());
+                    if cfg!(windows) {
+                        s[6] = St::Done("COM23".into());
+                    }
                     s
                 },
                 Some(Ok(())),

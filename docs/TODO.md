@@ -5,8 +5,10 @@ the Release and Update Standard (see `AGENTS.md`).
 
 ## Now
 
-- **Hand-test the update:** install v1.0.0, release v1.0.1, and update from
-  the screen (F1 → Update to 1.0.1) and with `comtap update`.
+- **Hand-test on a real Linux PC:** install with `install.sh`, set up a
+  device from the screen (sudo relaunch), open `/dev/ttyComTap0` from real
+  serial software, and update from the screen (F1 → Update) once the next
+  release is out.
 
 ## Next
 
@@ -20,8 +22,5 @@ the Release and Update Standard (see `AGENTS.md`).
 
 ## Ideas / Parking Lot
 
-- **Linux:** a pseudo-terminal per device (no driver needed), a stable
-  symlink such as `/dev/comtap0`, a systemd unit instead of the service,
-  settings in `/etc/comtap`; `install.sh` and a Linux asset.
 - Line-ending fix-up per device, for software that expects a different
   ending from the one the device sends.

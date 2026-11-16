@@ -1,6 +1,6 @@
 # Checks every push to dev/main and every pull request (App Standard
-# section 7): the pre-submit checklist from AGENTS.md on Windows, the one
-# platform ComTap ships, plus a syntax check of the PowerShell installers.
+# section 7): the pre-submit checklist from AGENTS.md on Windows and Linux,
+# the platforms ComTap ships, plus syntax checks of the installers.
 # ComTap is a terminal app with no frontend, so there is no typecheck, lint or
 # frontend build. Release builds are made only by release.yml.
 name: CI
@@ -62,3 +62,30 @@ jobs:
             foreach ($e in $errors) { Write-Error "$($script.Name):$($e.Extent.StartLineNumber): $($e.Message)"; $failed = $true }
           }
           if ($failed) { exit 1 }
+
+  checks-linux:
+    name: Checks (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # Installs the version (and components) pinned in rust-toolchain.toml.
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test
+
+      - name: Check shell script syntax
+        run: |
+          for f in docs/*.sh .github/scripts/*.sh; do bash -n "$f"; done
+          shellcheck docs/*.sh .github/scripts/*.sh

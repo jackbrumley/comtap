@@ -30,11 +30,14 @@ export const REPOSITORY = "jackbrumley/comtap";
 export const VERSION = readCargoVersion();
 export const TAG = `v${VERSION}`;
 
-// A variation: Windows only, and one asset. comtap.exe is its own installer
-// (it installs the com0com driver, the virtual ports and the service), so
-// there is no setup.exe or MSI.
+// A variation: one plain executable per platform, each its own installer.
+// comtap.exe installs the com0com driver, the virtual ports and the Windows
+// service, so there is no setup.exe or MSI. The Linux build is a static (musl)
+// binary that installs its systemd service, so there is no .deb, .rpm or
+// AppImage; docs/install.sh downloads it.
 export const ASSET_NAMES = {
   windowsExe: `comtap-${VERSION}-windows-x64.exe`,
+  linuxBin: `comtap-${VERSION}-linux-x64`,
 };
 
 // Every asset a complete release must carry. verify-release.mjs checks the
@@ -44,6 +47,7 @@ export const EXPECTED_ASSETS = Object.values(ASSET_NAMES);
 // Order and labels of the Downloads block in every release's notes.
 export const DOWNLOAD_LINKS = [
   { platform: "Windows", label: "comtap.exe (64-bit)", fileName: ASSET_NAMES.windowsExe },
+  { platform: "Linux", label: "comtap (64-bit, static)", fileName: ASSET_NAMES.linuxBin },
 ];
 
 // The tag (with its `v`) is the URL path segment; the file name carries the

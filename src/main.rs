@@ -1,11 +1,18 @@
-//! ComTap: makes TCP devices show up as COM ports, using com0com virtual port pairs,
-//! and runs as a self-healing Windows service.
+//! ComTap: makes TCP devices show up as serial ports, and runs as a self-healing service.
+//! Windows: com0com virtual port pairs and a Windows service.
+//! Linux: pseudo-terminals with stable /dev links, and a systemd service.
 mod bridge;
 mod codec;
+#[cfg(windows)]
 mod com0com;
 mod config;
 mod logger;
 mod paths;
+mod ports;
+#[cfg(not(windows))]
+mod pty;
+#[cfg_attr(windows, path = "service.rs")]
+#[cfg_attr(not(windows), path = "service_linux.rs")]
 mod service;
 mod setup;
 mod status;
@@ -25,7 +32,7 @@ use std::time::Duration;
 #[command(
     name = "comtap",
     version,
-    about = "Make TCP devices show up as COM ports. Runs as a Windows service.\nRun with no command for the interactive screen."
+    about = "Make TCP devices show up as serial (COM) ports. Runs as a service.\nRun with no command for the interactive screen."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -40,7 +47,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Set everything up and start the service (run as administrator)
+    /// Set everything up and start the service (run as administrator, or with sudo)
     Install {
         /// Config to install (default: comtap_config.json next to comtap.exe, else the installed one)
         #[arg(long)]
@@ -51,7 +58,7 @@ enum Cmd {
         /// Leave the virtual port pairs in place
         #[arg(long)]
         keep_ports: bool,
-        /// Also remove the com0com driver and every com0com pair
+        /// Also remove the com0com driver and every com0com pair (Windows)
         #[arg(long)]
         remove_driver: bool,
     },
@@ -61,7 +68,7 @@ enum Cmd {
     Status,
     /// Create or repair the virtual ports from the config (run as administrator)
     Ports,
-    /// Update to the latest release (opens the installer in a new window)
+    /// Update to the latest release (runs the one-line installer)
     Update,
     /// Run the bridges in this window instead of as a service (for testing)
     Run {
@@ -69,6 +76,7 @@ enum Cmd {
         config: Option<PathBuf>,
     },
     /// Entry point for Windows when it starts the service
+    #[cfg(windows)]
     #[command(hide = true)]
     Service,
 }
@@ -78,28 +86,46 @@ fn main() {
     let result = match cli.cmd {
         None => {
             logger::init(paths::logs_dir(), false);
-            tui::run(cli.open, cli.update_failed)
+            let r = tui::run(cli.open, cli.update_failed);
+            setup::run_pending_relaunch();
+            update::run_pending();
+            r
         }
+        #[cfg(windows)]
         Some(Cmd::Service) => service::dispatch(),
         Some(cmd) => {
             logger::init(paths::logs_dir(), false);
             match cmd {
                 Cmd::Install { config } => install_cli(config),
-                Cmd::Uninstall { keep_ports, remove_driver } => {
-                    setup::uninstall(keep_ports, remove_driver, &mut setup::cli_reporter(&setup::UNINSTALL))
-                }
+                Cmd::Uninstall {
+                    keep_ports,
+                    remove_driver,
+                } => setup::uninstall(
+                    keep_ports,
+                    remove_driver,
+                    &mut setup::cli_reporter(&setup::UNINSTALL),
+                ),
                 Cmd::Restart => setup::restart(&mut setup::cli_reporter(&setup::RESTART)),
                 Cmd::Status => show_status(),
                 Cmd::Update => update::run_update().map_err(anyhow::Error::msg).map(|()| {
-                    println!("The installer is running in a new window. Windows will ask for admin permission.");
+                    update::run_pending();
+                    println!("{}", update::STARTED_MESSAGE);
                 }),
                 Cmd::Ports => setup::repair(&mut setup::cli_reporter(&setup::REPAIR)),
                 Cmd::Run { config } => {
                     logger::init(paths::logs_dir(), true);
                     let cfg = paths::resolve_config(config);
-                    log!("Running in this window with {} (close the window to stop)", cfg.display());
-                    run_all(&cfg, Arc::new(AtomicBool::new(false)))
+                    log!(
+                        "Running with {} (Ctrl+C or close the window to stop)",
+                        cfg.display()
+                    );
+                    #[cfg(windows)]
+                    let stop = Arc::new(AtomicBool::new(false));
+                    #[cfg(not(windows))]
+                    let stop = service::stop_on_signals();
+                    run_all(&cfg, stop)
                 }
+                #[cfg(windows)]
                 Cmd::Service => unreachable!(),
             }
         }
@@ -185,7 +211,7 @@ pub fn run_all(cfg_path: &Path, stop: Arc<AtomicBool>) -> Result<()> {
             let _ = flusher.join();
             return Ok(());
         }
-        match com0com::Setupc::find().and_then(|s| com0com::reconcile(&s, &cfg.links)) {
+        match ports::prepare(&cfg.links) {
             Ok(d) => break d,
             Err(e) => {
                 log!("Virtual ports not ready: {e:#}. Retrying in 30 s.");
@@ -218,6 +244,7 @@ pub fn run_all(cfg_path: &Path, stop: Arc<AtomicBool>) -> Result<()> {
 
 fn show_status() -> Result<()> {
     println!("Service: {}", service::state_text());
+    #[cfg(windows)]
     println!("Driver:  {}", service::driver_state_text());
     let Some(st) = status::read() else {
         println!(

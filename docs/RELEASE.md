@@ -18,9 +18,11 @@ and one-line installs for every user.
 | Version bump commit | `chore: bump version to X.Y.Z` | |
 | Git tag and release title | `vX.Y.Z` | `v1.0.0` |
 | First line of the release notes | `# ComTap vX.Y.Z` | |
-| Asset | `comtap-X.Y.Z-windows-x64.exe` | `comtap-1.0.0-windows-x64.exe` |
+| Windows asset | `comtap-X.Y.Z-windows-x64.exe` | `comtap-1.1.0-windows-x64.exe` |
+| Linux asset (static) | `comtap-X.Y.Z-linux-x64` | `comtap-1.1.0-linux-x64` |
 
-A complete release carries one asset, named by `scripts/release-assets.mjs`.
+A complete release carries these two assets, named by
+`scripts/release-assets.mjs`.
 
 ## Branches
 
@@ -42,15 +44,18 @@ Pushing the tag starts the **Release** workflow
 1. **Prepare** checks the tag matches the `Cargo.toml` version and creates the
    pre-release with the notes skeleton.
 2. **Build** checks the com0com files' SHA-256s, builds `comtap.exe` on
-   Windows (`npm run release:windows`) and uploads it.
-3. **Verify** fails unless the release carries exactly the one asset, with a
-   SHA-256 digest.
+   Windows (`npm run release:windows`) and the static Linux binary on Ubuntu
+   (`npm run release:linux`, musl), and uploads both.
+3. **Verify** fails unless the release carries exactly the two assets, each
+   with a SHA-256 digest.
 4. **Install test** installs the pre-release with the installer scripts from
    the tag on a fresh Windows runner, then: sets up a device end to end (the
    com0com driver, a virtual port, the service) with a fake TCP device;
    checks that with no software on the port ComTap stays connected and drops
    the data quietly; reads the data from the COM port; updates in place and
-   checks the service and config survive; uninstalls.
+   checks the service and config survive; uninstalls. The same test runs
+   on a fresh Ubuntu runner with `install.sh`, the systemd service and the
+   pty link `/dev/ttyComTap0`.
 
 Follow it with:
 ```bash
@@ -82,7 +87,9 @@ the in-app updater and the one-line installer serve the new version.
 
 - An older installed version offers the update (header, F1, `comtap update`)
   and the update installs, restarts the service and opens the new version.
-- `irm https://brumley.info/comtap/install.ps1 | iex` installs the new version.
+- `irm https://brumley.info/comtap/install.ps1 | iex` and
+  `curl --proto '=https' --tlsv1.2 -sSf https://brumley.info/comtap/install.sh | bash`
+  install the new version.
 
 ## When Something Fails
 
@@ -100,8 +107,10 @@ the in-app updater and the one-line installer serve the new version.
 
 ## Building Locally (Fallback)
 
-On Windows: `npm run release:windows`, then `node scripts/package-release.mjs`,
-then `gh release upload vX.Y.Z release-artifacts/*`.
+On Windows: `npm run release:windows`; on Linux (with `musl-tools` and the
+`x86_64-unknown-linux-musl` target): `npm run release:linux`. Then
+`node scripts/package-release.mjs` and
+`gh release upload vX.Y.Z release-artifacts/*` on each.
 
 ## Agent Checklist
 

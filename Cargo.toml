@@ -3,7 +3,7 @@ name = "comtap"
 version = "1.0.2"
 edition = "2024"
 rust-version = "1.85"
-description = "Bridge TCP devices to virtual COM ports, as a self-healing Windows service."
+description = "Bridge TCP devices to virtual serial (COM) ports, as a self-healing service for Windows and Linux."
 repository = "https://github.com/jackbrumley/comtap"
 build = "build.rs"
 
@@ -14,10 +14,15 @@ clap = { version = "4.5", features = ["derive"] }
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serialport = "4.7"
 socket2 = { version = "0.5", features = ["all"] }
 ureq = { version = "3", features = ["json"] }
+
+[target.'cfg(windows)'.dependencies]
+serialport = "4.7"
 windows-service = "0.8"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [build-dependencies]
 winresource = "0.1.34"

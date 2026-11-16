@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ComTap · Install</title>
-  <meta name="description" content="ComTap is a free, open-source Windows service that makes a network (TCP) device show up as a COM port, so software that only talks serial can read it. It starts with Windows, reconnects by itself and shows every byte in hex and text. Install it with one command." />
+  <meta name="description" content="ComTap is a free, open-source service for Windows and Linux that makes a network (TCP) device show up as a serial (COM) port, so software that only talks serial can read it. It starts at boot, reconnects by itself and shows every byte in hex and text. Install it with one command." />
   <link rel="icon" href="assets/icon.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -20,7 +20,7 @@
         <div class="hero-copy">
           <span class="hero-tile"><img src="assets/icon.png" alt="" width="64" height="64" /></span>
           <h1>ComTap</h1>
-          <p class="tagline">Make a network (TCP) device show up as a COM port on Windows, for software that only talks serial.</p>
+          <p class="tagline">Make a network (TCP) device show up as a serial (COM) port on Windows and Linux, for software that only talks serial.</p>
         </div>
         <svg class="hero-art" viewBox="0 0 420 340" aria-hidden="true">
           <defs>
@@ -50,6 +50,7 @@
   <main class="page">
     <section class="install" aria-label="Install">
       <div class="platform-labels" id="platform-labels" role="tablist">
+        <button type="button" class="platform-label" data-platform="linux" role="tab">Linux</button>
         <button type="button" class="platform-label" data-platform="windows" role="tab">Windows</button>
         <div class="platform-tab-indicator" id="platform-tab-indicator"></div>
       </div>
@@ -73,11 +74,12 @@
 
     <section class="features">
       <h2>What it does</h2>
-      <p class="features-lead">ComTap is a Windows service that makes a network (TCP) device show up as a COM port, so software that only talks serial can read it. It was built for a production X-ray inspection line, where an Ethernet barcode scanner had to feed software that only reads a serial port, and it's in daily use there. It sets up its own virtual COM ports, starts with Windows, reconnects by itself, and shows every byte in hex and text.</p>
+      <p class="features-lead">ComTap is a service for Windows and Linux that makes a network (TCP) device show up as a serial (COM) port, so software that only talks serial can read it. It was built for a production X-ray inspection line, where an Ethernet barcode scanner had to feed software that only reads a serial port, and it's in daily use there. It sets up its own virtual serial ports, starts at boot, reconnects by itself, and shows every byte in hex and text.</p>
       <ul>
         <li>Makes any TCP device a COM port: barcode scanners, scales, PLCs, printers</li>
-        <li>Runs as a Windows service: starts at boot with no login, and reconnects by itself</li>
-        <li>Sets up its own virtual COM ports with the signed com0com driver, with Secure Boot and Memory Integrity on</li>
+        <li>Runs as a service (Windows service or systemd): starts at boot with no login, and reconnects by itself</li>
+        <li>Windows: sets up its own virtual COM ports with the signed com0com driver, with Secure Boot and Memory Integrity on</li>
+        <li>Linux: a pseudo-terminal per device at a fixed name such as /dev/ttyComTap0, with no driver to install</li>
         <li>Any number of devices, each on its own COM port</li>
         <li>A RawTap-style screen shows each device live, with every byte in hex and text</li>
         <li>Updates itself from GitHub and keeps your settings</li>
@@ -104,6 +106,20 @@
 
   <script type="application/json" id="install-config">
   {
+    "linux": {
+      "system": {
+        "label": "System Wide",
+        "command": "curl --proto '=https' --tlsv1.2 -sSf https://brumley.info/comtap/install.sh | bash",
+        "hint": "Open <strong>Terminal</strong> and run:",
+        "note": "Installs ComTap and its systemd service for the whole PC (asks for your password), adds you to the serial-port group, then opens the setup screen. If ComTap is already set up, it updates it and keeps your devices."
+      },
+      "uninstall": {
+        "label": "Uninstall",
+        "command": "curl --proto '=https' --tlsv1.2 -sSf https://brumley.info/comtap/uninstall.sh | bash",
+        "hint": "Open <strong>Terminal</strong> and run:",
+        "note": "Removes the service, its /dev links and the program. Your settings stay in /etc/comtap."
+      }
+    },
     "windows": {
       "install": {
         "label": "System Wide",

@@ -1,8 +1,8 @@
 //! Copies bytes both ways between ComTap's side of a virtual port pair and a TCP device,
 //! and keeps reconnecting until told to stop.
-use crate::com0com::Port;
 use crate::config::Link;
 use crate::log;
+use crate::ports::{self, Port};
 use crate::status::{Shared, now, set_state};
 use crate::traffic::{Dir, Traffic};
 use std::io::{self, ErrorKind, Read, Write};
@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 const BACKOFF_START: Duration = Duration::from_millis(500);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const POLL: Duration = Duration::from_millis(100);
+pub(crate) const POLL: Duration = Duration::from_millis(100);
 
 /// Anything ComTap can bridge to TCP: the virtual COM port, or a socket in tests.
 pub trait Device: Read + Write + Send {
@@ -22,43 +22,6 @@ pub trait Device: Read + Write + Send {
     /// Whether the software has the COM port open; None when ComTap can't tell.
     fn software_open(&mut self) -> Option<bool> {
         None
-    }
-}
-
-/// ComTap's side of a pair. With `open_signal`, its RI pin is on while the software has the port open.
-struct ComSide {
-    port: Box<dyn serialport::SerialPort>,
-    open_signal: bool,
-}
-
-impl Read for ComSide {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.port.read(buf)
-    }
-}
-
-impl Write for ComSide {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.port.write(buf)
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        self.port.flush()
-    }
-}
-
-impl Device for ComSide {
-    fn try_clone_dev(&self) -> io::Result<Box<dyn Device>> {
-        Ok(Box::new(ComSide {
-            port: self.port.try_clone().map_err(io::Error::other)?,
-            open_signal: self.open_signal,
-        }))
-    }
-    fn software_open(&mut self) -> Option<bool> {
-        if self.open_signal {
-            self.port.read_ring_indicator().ok()
-        } else {
-            None
-        }
     }
 }
 
@@ -140,12 +103,11 @@ pub fn nap(dur: Duration, stop: &AtomicBool) {
 
 /// Runs one link for ever: opens the COM side, then keeps the TCP side connected.
 pub fn run_link(link: Link, com: Port, stop: Arc<AtomicBool>, st: Shared, traffic: Arc<Traffic>) {
-    let device_path = com.path;
+    let device_path = ports::describe(&com);
     let mut last_err = String::new();
     while !stop.load(Ordering::Relaxed) {
-        let opened = serialport::new(&device_path, 115_200).timeout(POLL).open();
-        let mut port = match opened {
-            Ok(p) => p,
+        let (dev, opened) = match ports::open(&com) {
+            Ok(d) => d,
             Err(e) => {
                 let msg = format!("cannot open {device_path}: {e}");
                 if msg != last_err {
@@ -159,19 +121,12 @@ pub fn run_link(link: Link, com: Port, stop: Arc<AtomicBool>, st: Shared, traffi
             }
         };
         last_err.clear();
-        // Look like a powered device to the software: it sees DSR, DCD and CTS.
-        let _ = port.write_data_terminal_ready(true);
-        let _ = port.write_request_to_send(true);
         log!(
-            "[{}] Opened {device_path} (software side {})",
+            "[{}] Opened {opened} (software side {})",
             link.name,
-            link.com
+            ports::software_path(&link.com)
         );
-        let dev = ComSide {
-            port,
-            open_signal: com.open_signal,
-        };
-        if let Err(e) = run_with_device(&link, Box::new(dev), &stop, &st, &traffic) {
+        if let Err(e) = run_with_device(&link, dev, &stop, &st, &traffic) {
             let msg = format!("{device_path} failed: {e}");
             log!("[{}] {msg}. Reopening.", link.name);
             traffic.event(&msg);

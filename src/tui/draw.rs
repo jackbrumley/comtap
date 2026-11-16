@@ -45,11 +45,11 @@ impl App {
             ]),
             Line::from(vec![
                 Span::styled("     2  ", Style::new().fg(ACCENT)),
-                "Pick the COM port your software will open".into(),
+                words::PICK_PORT.into(),
             ]),
             Line::from(vec![
                 Span::styled("     3  ", Style::new().fg(ACCENT)),
-                "Install. ComTap then runs in the background and starts with Windows.".into(),
+                words::STARTS.into(),
             ]),
             "".into(),
         ];
@@ -60,12 +60,12 @@ impl App {
                 " to start".into(),
             ]));
         } else {
-            lines.push("   Setting up needs administrator rights.".into());
+            lines.push(words::SETUP_NEEDS_ADMIN.into());
             lines.push("".into());
             lines.push(Line::from(vec![
                 "   Press ".into(),
                 badge("Enter", Color::Green),
-                " to continue. Windows asks for permission (UAC).".into(),
+                words::SETUP_CONTINUE.into(),
             ]));
         }
         if let Some((true, m)) = &self.msg {
@@ -297,7 +297,10 @@ impl App {
                     lines.push(Line::from(Span::styled(format!("      {r}"), detail_style)));
                 }
             }
-            if matches!(p.states[i], St::Running) && name.starts_with("Create the virtual") {
+            if cfg!(windows)
+                && matches!(p.states[i], St::Running)
+                && name.starts_with("Create the virtual")
+            {
                 let hint =
                     "The first time, Windows can ask to install the com0com driver: click Install.";
                 for r in wrap_words(hint, text_w) {
@@ -386,7 +389,7 @@ impl App {
             badge("ComTap", ACCENT),
             Span::raw(" "),
             Span::styled(format!(" {state} "), Style::new().fg(fg).bg(bg)),
-            Span::styled(format!("  driver com0com {}", self.drv), DIM),
+            Span::styled(format!("  {} {}", words::DRIVER_LABEL, self.drv), DIM),
         ];
         if let Some(u) = self.update.as_ref().filter(|u| u.update_available) {
             spans.push(Span::styled(
@@ -397,7 +400,7 @@ impl App {
         let right = if self.admin {
             badge("ADMIN", Color::Green)
         } else {
-            badge("VIEW ONLY · F2 admin", Color::Yellow)
+            badge(words::VIEW_ONLY_BADGE, Color::Yellow)
         };
         // Narrow window: the driver state is the first thing to go.
         if spans.iter().map(|s| s.width()).sum::<usize>() + right.width() + 1 > head.width as usize
@@ -507,10 +510,7 @@ impl App {
             Some((false, m)) => {
                 Line::from(Span::styled(format!(" {m}"), Style::new().fg(Color::Green)))
             }
-            None if !self.admin => Line::from(Span::styled(
-                " View only. Changes need admin: press F2.",
-                DIM,
-            )),
+            None if !self.admin => Line::from(Span::styled(words::VIEW_ONLY, DIM)),
             None => Line::from(""),
         };
         fr.render_widget(Paragraph::new(m), msg);
@@ -524,13 +524,10 @@ impl App {
             Overlay::Menu { sel, filter } => self.draw_menu(fr, *sel, filter),
             Overlay::Admin { .. } => confirm(
                 fr,
-                " Needs admin ",
+                words::ADMIN_TITLE,
                 Color::Yellow,
-                vec![
-                    "This change needs administrator rights.".into(),
-                    "ComTap will reopen as admin, and Windows will ask for permission.".into(),
-                ],
-                "reopen as admin",
+                words::ADMIN_LINES.iter().map(|l| Line::from(*l)).collect(),
+                words::ADMIN_BUTTON,
             ),
             Overlay::ConfirmDelete(i) => {
                 let l = &self.cfg.links[*i];
@@ -551,10 +548,10 @@ impl App {
                 fr,
                 " Uninstall ComTap ",
                 Color::Yellow,
-                vec![
-                    "Remove the service, its virtual COM ports and the desktop shortcut?".into(),
-                    "Your settings, logs and the com0com driver stay.".into(),
-                ],
+                words::UNINSTALL_LINES
+                    .iter()
+                    .map(|l| Line::from(*l))
+                    .collect(),
                 "uninstall",
             ),
         }

@@ -7,7 +7,7 @@ use crate::setup::{self, Plan, St};
 use crate::status::StatusFile;
 use crate::traffic::{self, Dir};
 use crate::update::UpdateCheck;
-use crate::{codec, com0com, paths, service, status};
+use crate::{codec, paths, ports, service, status};
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -63,12 +63,12 @@ const F_NAME: usize = 0;
 const F_HOST: usize = 1;
 const F_PORT: usize = 2;
 const F_COM: usize = 3;
-const LABELS: [&str; 4] = ["Name", "Device IP", "TCP port", "COM port"];
+const LABELS: [&str; 4] = ["Name", "Device IP", "TCP port", words::PORT_LABEL];
 const HELP: [&str; 4] = [
     "A label for this device, shown on this screen and in the logs. For example: Dock 3 scanner.",
     "The device's IP address or network name. ComTap connects to it as a TCP client.",
     "The TCP port the device sends its data on. You find it in the device's network settings.",
-    "The COM port your software will open. Only free ports are listed. Use ←→ to change it.",
+    words::PORT_HELP,
 ];
 
 struct Form {
@@ -209,9 +209,7 @@ pub fn run(open: Option<String>, update_failed: bool) -> Result<()> {
     ratatui::restore();
     r?;
     if app.start_update {
-        println!(
-            "Starting the ComTap update in a new window. Windows will ask for admin permission."
-        );
+        println!("{}", words::UPDATE_STARTING);
         crate::update::run_update().map_err(anyhow::Error::msg)?;
     }
     Ok(())
@@ -754,7 +752,7 @@ impl App {
             .filter(|(i, _)| Some(*i) != idx)
             .map(|(_, l)| l.com.clone())
             .collect();
-        let mut coms = com0com::free_ports(&taken, 40);
+        let mut coms = ports::free_ports(&taken, 40);
         let mut note = None;
         let mut com = com;
         if !com.is_empty() && !coms.contains(&com) {
@@ -949,6 +947,7 @@ fn trunc(s: &str, n: usize) -> String {
 mod draw;
 mod traffic_view;
 mod update_prompt;
+mod words;
 
 #[cfg(test)]
 mod tests;

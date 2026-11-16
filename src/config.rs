@@ -13,16 +13,29 @@ pub struct Link {
     pub name: String,
     /// host:port of the device. The device is the TCP server.
     pub tcp: String,
-    /// The COM port your software opens, e.g. "COM5".
+    /// The port your software opens: "COM5" on Windows, "ttyComTap0" (/dev/ttyComTap0) on Linux.
     pub com: String,
 }
 
+#[cfg(windows)]
 pub const EXAMPLE: &str = r#"{
   "links": [
     {
       "name": "Device 1",
       "tcp": "192.168.1.50:51236",
       "com": "COM5"
+    }
+  ]
+}
+"#;
+
+#[cfg(not(windows))]
+pub const EXAMPLE: &str = r#"{
+  "links": [
+    {
+      "name": "Device 1",
+      "tcp": "192.168.1.50:51236",
+      "com": "ttyComTap0"
     }
   ]
 }
@@ -41,23 +54,13 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Normalises COM names and checks every link. An empty list is allowed.
+    /// Normalises port names and checks every link. An empty list is allowed.
     pub fn validate(&mut self) -> Result<()> {
         let cfg = self;
         for l in &mut cfg.links {
-            l.com = l.com.trim().to_ascii_uppercase();
+            l.com = crate::ports::normalize(&l.com)
+                .map_err(|e| anyhow::anyhow!("link '{}': com {e}", l.name))?;
             l.tcp = l.tcp.trim().to_string();
-            let n = l
-                .com
-                .strip_prefix("COM")
-                .and_then(|n| n.parse::<u32>().ok());
-            if !matches!(n, Some(1..=255)) {
-                bail!(
-                    "link '{}': com must look like COM5, got '{}'",
-                    l.name,
-                    l.com
-                );
-            }
             let ok = l
                 .tcp
                 .rsplit_once(':')
@@ -93,9 +96,10 @@ mod tests {
     #[test]
     fn example_parses() {
         let c = Config::parse(EXAMPLE).unwrap();
-        assert_eq!(c.links[0].com, "COM5");
+        assert_eq!(c.links.len(), 1);
     }
 
+    #[cfg(windows)]
     #[test]
     fn normalises_and_rejects() {
         let c = Config::parse(r#"{"links":[{"name":"a","tcp":"1.2.3.4:5","com":" com7 "}]}"#);

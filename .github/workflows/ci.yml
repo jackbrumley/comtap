@@ -1,0 +1,64 @@
+# Checks every push to dev/main and every pull request (App Standard
+# section 7): the pre-submit checklist from AGENTS.md on Windows, the one
+# platform ComTap ships, plus a syntax check of the PowerShell installers.
+# ComTap is a terminal app with no frontend, so there is no typecheck, lint or
+# frontend build. Release builds are made only by release.yml.
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    name: Checks (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      # Installs the version (and components) pinned in rust-toolchain.toml.
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm run check:structure
+
+      - name: cargo fmt
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test
+
+      # The PowerShell equivalent of `bash -n`.
+      - name: Check PowerShell script syntax
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($script in Get-ChildItem docs/*.ps1) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$null, [ref]$errors) | Out-Null
+            foreach ($e in $errors) { Write-Error "$($script.Name):$($e.Extent.StartLineNumber): $($e.Message)"; $failed = $true }
+          }
+          if ($failed) { exit 1 }

@@ -1,0 +1,208 @@
+# Builds the release asset on GitHub and attaches it to a pre-release.
+#
+#   Tag push (vX.Y.Z): creates the pre-release (notes skeleton from
+#     release-notes-template.mjs), builds comtap.exe on Windows, uploads it,
+#     verifies the release is complete, then install-tests it end to end with
+#     the installer scripts from the tag.
+#     Promotion to latest stays a deliberate step: npm run release:promote.
+#   Manual run (Actions tab or `gh workflow run release.yml --ref <branch>`):
+#     a dry run that builds and packages, and keeps the file as a workflow
+#     artifact, without touching any release.
+#
+# Asset names come only from scripts/release-assets.mjs via package-release.mjs.
+# See docs/RELEASE.md and the Release and Update Standard.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PUBLISH: ${{ github.event_name == 'push' }}
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Read release version
+        id: version
+        run: |
+          tag="v$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n1)"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Release version: ${tag}"
+
+      - name: Check tag matches the configured version
+        if: env.PUBLISH == 'true'
+        run: |
+          if [[ "${GITHUB_REF_NAME}" != "${{ steps.version.outputs.tag }}" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match the Cargo.toml version ${{ steps.version.outputs.tag }}. Use npm run release:prepare."
+            exit 1
+          fi
+
+      - name: Create pre-release
+        if: env.PUBLISH == 'true'
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "Release $tag already exists; reusing it."
+          else
+            npm run --silent release:notes > release-notes.md
+            gh release create "$tag" --verify-tag --prerelease --title "$tag" --notes-file release-notes.md
+          fi
+
+  build:
+    name: Build Windows
+    needs: prepare
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      # Installs the version pinned in rust-toolchain.toml.
+      - name: Install Rust toolchain
+        shell: bash
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The com0com driver's catalog signs its files byte for byte; a checkout
+      # that changed their line endings would ship a driver Windows rejects.
+      - name: Check the com0com files are unchanged
+        shell: bash
+        run: |
+          cd vendor/com0com
+          sed -n 's/^\([0-9a-f]\{64\}\) \*\(.*\)$/\1  \2/p' README.md | sha256sum -c
+
+      - name: Build comtap.exe
+        shell: bash
+        run: npm run release:windows
+
+      - name: Package release asset
+        shell: bash
+        run: node scripts/package-release.mjs
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-Windows
+          path: release-artifacts/*
+          retention-days: 14
+
+      - name: Upload to release
+        if: env.PUBLISH == 'true'
+        shell: bash
+        run: gh release upload "${{ needs.prepare.outputs.tag }}" release-artifacts/* --clobber
+
+  verify:
+    name: Verify release
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+      - run: node scripts/verify-release.mjs
+
+  # Installs the published pre-release with the installer scripts from this
+  # tag (the ones promotion deploys to brumley.info/comtap), exactly as users
+  # will, then sets up a device end to end: the com0com driver, a virtual port,
+  # the service, and data from a TCP device arriving on the COM port.
+  install-test:
+    name: Install test Windows
+    needs: [prepare, verify]
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      # Shared runner IPs exhaust GitHub's anonymous API rate limit.
+      COMTAP_GITHUB_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install (new PC)
+        run: |
+          ./docs/install.ps1 -Version $env:TAG -NoRelaunch
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $exe = Join-Path $env:ProgramFiles "ComTap\comtap.exe"
+          $version = & $exe --version
+          Write-Host "Installed: $exe ($version)"
+          if ($version -ne "comtap $($env:TAG.TrimStart('v'))") { exit 1 }
+
+      - name: Set up a device end to end
+        run: |
+          # A fake TCP device: sends a line every second to whoever connects.
+          Start-Job -Name device -ScriptBlock {
+            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 47001)
+            $listener.Start()
+            while ($true) {
+              $client = $listener.AcceptTcpClient()
+              $stream = $client.GetStream()
+              try {
+                while ($true) {
+                  $bytes = [Text.Encoding]::ASCII.GetBytes("CI-TEST-123`r`n")
+                  $stream.Write($bytes, 0, $bytes.Length)
+                  Start-Sleep -Seconds 1
+                }
+              } catch { $client.Close() }
+            }
+          } | Out-Null
+          $config = Join-Path $env:RUNNER_TEMP "comtap_config.json"
+          '{ "links": [ { "name": "CI device", "tcp": "127.0.0.1:47001", "com": "COM9" } ] }' | Set-Content -Path $config
+          $exe = Join-Path $env:ProgramFiles "ComTap\comtap.exe"
+          & $exe install --config $config
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $exe status
+          if ((Get-Service ComTap).Status -ne "Running") { Write-Error "the ComTap service is not running"; exit 1 }
+
+      - name: Data from the device arrives on the COM port
+        run: |
+          $port = [System.IO.Ports.SerialPort]::new("COM9")
+          $port.ReadTimeout = 15000
+          $port.Open()
+          try { $line = $port.ReadLine() } finally { $port.Close() }
+          Write-Host "COM9 received: $line"
+          if ($line -notmatch "CI-TEST-123") { exit 1 }
+
+      - name: Update in place (settings stay)
+        run: |
+          ./docs/install.ps1 -Version $env:TAG -NoRelaunch
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ((Get-Service ComTap).Status -ne "Running") { Write-Error "the service did not come back"; exit 1 }
+          $config = Get-Content (Join-Path $env:ProgramData "ComTap\comtap_config.json") -Raw
+          if ($config -notmatch "COM9") { Write-Error "the update lost the config"; exit 1 }
+
+      - name: Uninstall
+        run: |
+          ./docs/uninstall.ps1 -RemoveDriver
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (Get-Service ComTap -ErrorAction SilentlyContinue) { Write-Error "the service is still installed"; exit 1 }
+          if (Test-Path (Join-Path $env:ProgramFiles "ComTap\comtap.exe")) { Write-Error "comtap.exe is still installed"; exit 1 }
+          if (Test-Path ([Environment]::GetFolderPath("CommonDesktopDirectory") + "\ComTap.lnk")) { Write-Error "the shortcut is still there"; exit 1 }

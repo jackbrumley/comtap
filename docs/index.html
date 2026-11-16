@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ComTap · Install</title>
+  <meta name="description" content="ComTap is a free, open-source Windows service that makes a network (TCP) device show up as a COM port, so software that only talks serial can read it. It starts with Windows, reconnects by itself and shows every byte in hex and text. Install it with one command." />
+  <link rel="icon" href="assets/icon.png" type="image/png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" />
+  <link rel="stylesheet" href="https://brumley.info/shared/v1/app-page.css" />
+  <style>:root { --app-accent: #0284c7; --app-accent-2: #8b5cf6; --app-accent-dark: #38bdf8; }</style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <nav class="crumb"><a href="/">← All apps</a><a href="/">by Jack Brumley</a></nav>
+      <div class="hero-row">
+        <div class="hero-copy">
+          <span class="hero-tile"><img src="assets/icon.png" alt="" width="64" height="64" /></span>
+          <h1>ComTap</h1>
+          <p class="tagline">Make a network (TCP) device show up as a COM port on Windows, for software that only talks serial.</p>
+        </div>
+        <svg class="hero-art" viewBox="0 0 420 340" aria-hidden="true">
+          <defs>
+            <linearGradient id="h1" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#38bdf8" stop-opacity="0.8" />
+              <stop offset="1" stop-color="#8b5cf6" stop-opacity="0.12" />
+            </linearGradient>
+            <linearGradient id="h2" x1="1" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#8b5cf6" stop-opacity="0.7" />
+              <stop offset="1" stop-color="#0284c7" stop-opacity="0.06" />
+            </linearGradient>
+            <linearGradient id="h3" x1="0" y1="1" x2="1" y2="0">
+              <stop offset="0" stop-color="#1b2330" stop-opacity="0.05" />
+              <stop offset="1" stop-color="#0284c7" stop-opacity="0.45" />
+            </linearGradient>
+          </defs>
+          <rect x="130" y="50" width="250" height="210" rx="28" fill="url(#h3)" />
+          <rect x="70" y="170" width="150" height="130" rx="22" fill="url(#h1)" />
+          <rect x="300" y="24" width="100" height="90" rx="18" fill="url(#h2)" />
+          <polyline points="150,130 185,130 185,95 225,95 225,130 260,130 260,95 300,95 300,130 340,130" fill="none" stroke="#ffffff" stroke-opacity="0.6" stroke-width="3" stroke-linejoin="round" />
+          <path d="M196 170 H304 L292 222 Q290 230 282 230 H218 Q210 230 208 222 Z" fill="none" stroke="#ffffff" stroke-opacity="0.6" stroke-width="3" stroke-linejoin="round" />
+        </svg>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="install" aria-label="Install">
+      <div class="platform-labels" id="platform-labels" role="tablist">
+        <button type="button" class="platform-label" data-platform="windows" role="tab">Windows</button>
+        <div class="platform-tab-indicator" id="platform-tab-indicator"></div>
+      </div>
+
+      <p class="install-hint" id="install-hint" aria-live="polite"></p>
+
+      <div class="install-code-wrapper">
+        <pre class="install-code-block" id="install-code"></pre>
+        <button type="button" class="install-copy-btn" id="install-copy-btn" aria-label="Copy command"></button>
+      </div>
+      <div class="install-variants" id="install-variants"></div>
+      <p class="install-note" id="install-note"></p>
+
+      <div class="install-manual">
+        <a class="manual-btn" href="https://github.com/jackbrumley/comtap/releases/latest">
+          <svg class="manual-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2" /><path d="M7 11l5 5l5 -5" /><path d="M12 4l0 12" /></svg>
+          <span>Manual Download</span>
+        </a>
+      </div>
+    </section>
+
+    <section class="features">
+      <h2>What it does</h2>
+      <p class="features-lead">ComTap is a Windows service that makes a network (TCP) device show up as a COM port, so software that only talks serial can read it. It was built for a production X-ray inspection line, where an Ethernet barcode scanner had to feed software that only reads a serial port, and it's in daily use there. It sets up its own virtual COM ports, starts with Windows, reconnects by itself, and shows every byte in hex and text.</p>
+      <ul>
+        <li>Makes any TCP device a COM port: barcode scanners, scales, PLCs, printers</li>
+        <li>Runs as a Windows service: starts at boot with no login, and reconnects by itself</li>
+        <li>Sets up its own virtual COM ports with the signed com0com driver, with Secure Boot and Memory Integrity on</li>
+        <li>Any number of devices, each on its own COM port</li>
+        <li>A RawTap-style screen shows each device live, with every byte in hex and text</li>
+        <li>Updates itself from GitHub and keeps your settings</li>
+      </ul>
+    </section>
+
+    <footer class="site-footer">
+      <nav class="other-apps" aria-label="Other apps by Jack Brumley">
+        <div class="other-apps-head">
+          <p class="section-title">Other apps</p>
+          <a class="all-apps" href="https://brumley.info/">All apps &rarr;</a>
+        </div>
+        <ul class="app-tiles" data-other-apps data-current="comtap"></ul>
+      </nav>
+      <p class="footer-meta">
+        <span>&copy; Jack Brumley</span>
+        <span aria-hidden="true">&middot;</span>
+        <a href="https://github.com/jackbrumley/comtap">Source on GitHub</a>
+        <span aria-hidden="true">&middot;</span>
+        <a href="https://www.gnu.org/licenses/agpl-3.0.html">GNU AGPLv3</a>
+      </p>
+    </footer>
+  </main>
+
+  <script type="application/json" id="install-config">
+  {
+    "windows": {
+      "install": {
+        "label": "Install",
+        "command": "irm https://brumley.info/comtap/install.ps1 | iex",
+        "hint": "Open <strong>PowerShell</strong> or <strong>Windows Terminal</strong> and run:",
+        "note": "Asks for admin (it installs a driver and a service), then opens ComTap's setup screen. On a PC with ComTap already set up, it updates it and keeps your devices."
+      },
+      "uninstall": {
+        "label": "Uninstall",
+        "command": "irm https://brumley.info/comtap/uninstall.ps1 | iex",
+        "hint": "Open <strong>PowerShell</strong> and run:",
+        "note": "Removes the service, its virtual COM ports and the program. Your settings and logs stay in C:\\ProgramData\\ComTap."
+      }
+    }
+  }
+  </script>
+  <script src="https://brumley.info/shared/v1/install-widget.js" defer></script>
+  <script src="https://brumley.info/shared/v1/apps.js" defer></script>
+  <script src="https://brumley.info/shared/v1/other-apps.js" defer></script>
+</body>
+</html>

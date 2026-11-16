@@ -1,8 +1,18 @@
-//! Embeds the com0com driver files from vendor/com0com/ into the exe, if they are there.
-//! Without them the exe still builds, and `install` looks for a com0com folder next to the exe.
+//! Build steps:
+//! 1. Embeds the com0com driver files from vendor/com0com/ into the exe (with its ReadMe.txt,
+//!    which carries com0com's GPL notice). Without them the exe still builds, and `install`
+//!    looks for a com0com folder next to the exe.
+//! 2. Windows only: embeds the app icon and version information in comtap.exe, so Explorer,
+//!    Task Manager and the desktop shortcut show ComTap's icon, name and version.
+//!    `FileVersion` and `ProductVersion` come from Cargo.toml.
 use std::{env, fs, path::Path};
 
 fn main() {
+    embed_com0com();
+    embed_windows_resources();
+}
+
+fn embed_com0com() {
     let dir = Path::new("vendor/com0com");
     println!("cargo:rerun-if-changed=vendor/com0com");
     let mut out = String::from("pub static FILES: &[(&str, &[u8])] = &[\n");
@@ -22,4 +32,22 @@ fn main() {
     }
     out.push_str("];\n");
     fs::write(Path::new(&env::var("OUT_DIR").unwrap()).join("embedded.rs"), out).unwrap();
+}
+
+fn embed_windows_resources() {
+    println!("cargo:rerun-if-changed=packaging/icons/comtap.ico");
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let mut resource = winresource::WindowsResource::new();
+    resource
+        .set_icon("packaging/icons/comtap.ico")
+        .set("ProductName", "ComTap")
+        .set("FileDescription", "ComTap: TCP devices as COM ports")
+        .set("CompanyName", "Jack Brumley")
+        .set("LegalCopyright", "Jack Brumley");
+    // A failed resource compile fails the build: a Windows release must carry them.
+    if let Err(error) = resource.compile() {
+        panic!("Could not embed the Windows icon and version information: {error}");
+    }
 }

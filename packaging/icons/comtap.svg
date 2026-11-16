@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+<defs><clipPath id="w"><rect x="12" y="28" width="232" height="200" rx="30"/></clipPath></defs>
+<rect x="12" y="28" width="232" height="200" rx="30" fill="#1b2330"/>
+<rect x="12" y="28" width="232" height="40" fill="#38bdf8" clip-path="url(#w)"/>
+<polyline points="46,120 73,120 73,92 101,92 101,120 128,120 128,92 155,92 155,120 183,120 183,92 210,92" fill="none" stroke="#a78bfa" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/><path d="M61.4,153.5 Q58.0,141.0 71.0,141.0 L185.0,141.0 Q198.0,141.0 194.6,153.5 L184.6,190.5 Q181.2,203.0 168.2,203.0 L87.8,203.0 Q74.8,203.0 71.4,190.5 Z" fill="none" stroke="#38bdf8" stroke-width="12" stroke-linejoin="round"/><circle cx="90.2" cy="162.7" r="7" fill="#e5e7eb"/><circle cx="109.1" cy="162.7" r="7" fill="#e5e7eb"/><circle cx="128.0" cy="162.7" r="7" fill="#e5e7eb"/><circle cx="146.9" cy="162.7" r="7" fill="#e5e7eb"/><circle cx="165.8" cy="162.7" r="7" fill="#e5e7eb"/><circle cx="99.7" cy="184.4" r="7" fill="#e5e7eb"/><circle cx="118.5" cy="184.4" r="7" fill="#e5e7eb"/><circle cx="137.4" cy="184.4" r="7" fill="#e5e7eb"/><circle cx="156.3" cy="184.4" r="7" fill="#e5e7eb"/>
+</svg>

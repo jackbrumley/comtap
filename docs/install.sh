@@ -93,6 +93,7 @@ run_as_root() {
 keep_log() {
   if [[ "$EUID" -eq 0 ]] || sudo -n true 2>/dev/null; then
     run_as_root mkdir -p "$LOG_DIR" 2>/dev/null || true
+    # shellcheck disable=SC2016 # $1 and $2 expand in the root shell.
     run_as_root sh -c 'cat "$1" >> "$2"' sh "$LOG_FILE" "${LOG_DIR}/update.log" 2>/dev/null || true
   fi
 }
@@ -238,8 +239,8 @@ already_set_up=false
 #    unit, starts the service again and checks each device. Exit 3 means only
 #    that step failed; the new binary is in place.
 #  - Then the serial-port group, if needed. Exit 4 means only that failed.
-# shellcheck disable=SC2016 # $1..$5 expand in the root shell.
 root_status=0
+# shellcheck disable=SC2016 # $1..$5 expand in the root shell.
 run_as_root bash -c '
   install -m 0755 "$1" "$2" || exit 1
   if [ "$3" = true ]; then

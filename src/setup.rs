@@ -38,6 +38,7 @@ pub const INSTALL: Plan = Plan {
         "Install the ComTap service (starts at boot)",
         "Start the service",
         "Create the desktop shortcut",
+        "Add comtap to the system PATH",
         "Check each device connects",
     ],
 };
@@ -87,6 +88,7 @@ pub const UNINSTALL: Plan = Plan {
         "Stop and remove the service",
         "Remove the virtual COM ports",
         "Remove the desktop shortcut",
+        "Remove comtap from the system PATH",
     ],
 };
 
@@ -231,7 +233,12 @@ pub fn install(cfg: &Config, rep: Rep) -> Result<()> {
         Ok(p) => done(p.display().to_string()),
         Err(e) => Ok(St::Warn(format!("{e:#}"))),
     })?;
-    step(rep, 10, || check_connects(&cfg.links))?;
+    step(rep, 10, || match set_on_path(&paths::program_dir(), true) {
+        Ok(true) => done("open a new terminal to use it"),
+        Ok(false) => done("already there"),
+        Err(e) => Ok(St::Warn(format!("{e:#}"))),
+    })?;
+    step(rep, 11, || check_connects(&cfg.links))?;
     log!("Installed. Software opens {}", ports_summary(&cfg.links));
     Ok(())
 }
@@ -348,6 +355,11 @@ pub fn uninstall(keep_ports: bool, remove_driver: bool, rep: Rep) -> Result<()> 
         let _ = std::fs::remove_file(paths::shortcut());
         done("")
     })?;
+    step(rep, 4, || match set_on_path(&paths::program_dir(), false) {
+        Ok(true) => done(""),
+        Ok(false) => Ok(St::Skip("not there".into())),
+        Err(e) => Ok(St::Warn(format!("{e:#}"))),
+    })?;
     log!(
         "Uninstalled. Config, logs and traffic stay in {}",
         paths::data_dir().display()
@@ -391,6 +403,31 @@ fn create_shortcut(target: &Path) -> Result<std::path::PathBuf> {
     );
     com0com::powershell(&script)?;
     Ok(lnk)
+}
+
+/// Adds `dir` to (or removes it from) the machine PATH, so `comtap` runs from any new terminal.
+/// Returns whether PATH changed. Reads and writes the raw registry value, so entries such as
+/// `%SystemRoot%\system32` stay unexpanded, then tells running programs that PATH changed.
+fn set_on_path(dir: &Path, add: bool) -> Result<bool> {
+    const SCRIPT: &str = r#"$ErrorActionPreference='Stop'
+$d = __DIR__
+$k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $true)
+$old = $k.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+$parts = @($old -split ';' | Where-Object { $_ -ne '' })
+$others = @($parts | Where-Object { $_.TrimEnd('\') -ine $d.TrimEnd('\') })
+$present = $others.Count -lt $parts.Count
+if ((__ADD__) -eq $present) { 'unchanged'; exit }
+if (__ADD__) { $new = $others + $d } else { $new = $others }
+$k.SetValue('Path', ($new -join ';'), 'ExpandString')
+Add-Type -Namespace ComTap -Name Env -MemberDefinition '[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr h, uint m, UIntPtr w, string l, uint f, uint t, out UIntPtr r);'
+$r = [UIntPtr]::Zero
+[void][ComTap.Env]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$r)
+'changed'"#;
+    let script = SCRIPT
+        .replace("__DIR__", &ps_quote(&dir.display().to_string()))
+        .replace("__ADD__", if add { "$true" } else { "$false" });
+    let out = com0com::powershell(&script)?;
+    Ok(out.trim() == "changed")
 }
 
 /// Starts this exe again as administrator (UAC prompt), opening `open` on the screen.

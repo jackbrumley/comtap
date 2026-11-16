@@ -41,7 +41,7 @@
           <rect x="70" y="170" width="150" height="130" rx="22" fill="url(#h1)" />
           <rect x="300" y="24" width="100" height="90" rx="18" fill="url(#h2)" />
           <polyline points="150,130 185,130 185,95 225,95 225,130 260,130 260,95 300,95 300,130 340,130" fill="none" stroke="#ffffff" stroke-opacity="0.6" stroke-width="3" stroke-linejoin="round" />
-          <path d="M196 170 H304 L292 222 Q290 230 282 230 H218 Q210 230 208 222 Z" fill="none" stroke="#ffffff" stroke-opacity="0.6" stroke-width="3" stroke-linejoin="round" />
+          <path d="M204 170 H296 Q305 170 303 179 L292 222 Q290 230 282 230 H218 Q210 230 208 222 L197 179 Q195 170 204 170 Z" fill="none" stroke="#ffffff" stroke-opacity="0.6" stroke-width="3" stroke-linejoin="round" />
         </svg>
       </div>
     </div>
@@ -106,15 +106,15 @@
   {
     "windows": {
       "install": {
-        "label": "Install",
+        "label": "System Wide",
         "command": "irm https://brumley.info/comtap/install.ps1 | iex",
-        "hint": "Open <strong>PowerShell</strong> or <strong>Windows Terminal</strong> and run:",
-        "note": "Asks for admin (it installs a driver and a service), then opens ComTap's setup screen. On a PC with ComTap already set up, it updates it and keeps your devices."
+        "hint": "Open <strong>PowerShell as Administrator</strong> and run:",
+        "note": "Installs the driver and service for every user on this PC, then opens ComTap's setup screen. If ComTap is already set up, it updates it and keeps your devices."
       },
       "uninstall": {
         "label": "Uninstall",
         "command": "irm https://brumley.info/comtap/uninstall.ps1 | iex",
-        "hint": "Open <strong>PowerShell</strong> and run:",
+        "hint": "Open <strong>PowerShell as Administrator</strong> and run:",
         "note": "Removes the service, its virtual COM ports and the program. Your settings and logs stay in C:\\ProgramData\\ComTap."
       }
     }

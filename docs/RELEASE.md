@@ -7,7 +7,8 @@ procedure; the standard has the reasoning and the full installer and updater
 contracts.
 
 Release identity (tag, title, asset name, download link) is consumed by
-`docs/install.ps1` and the in-app updater, so a format mistake breaks updates
+`docs/install.ps1`, `docs/install.sh` and the in-app updater (`docs/update.ps1`,
+`docs/update.sh`), so a format mistake breaks updates
 and one-line installs for every user.
 
 ## Format
@@ -53,9 +54,11 @@ Pushing the tag starts the **Release** workflow
    com0com driver, a virtual port, the service) with a fake TCP device;
    checks that with no software on the port ComTap stays connected and drops
    the data quietly; reads the data from the COM port; updates in place and
-   checks the service and config survive; uninstalls. The same test runs
-   on a fresh Ubuntu runner with `install.sh`, the systemd service and the
-   pty link `/dev/ttyComTap0`.
+   checks the service and config survive; runs the installed build's real
+   in-app update (`scripts/test-in-app-update.mjs`: `comtap update` with the
+   tag's own `update.ps1`, which updates to the latest published release);
+   uninstalls. The same test runs on a fresh Ubuntu runner with `install.sh`,
+   `update.sh`, the systemd service and the pty link `/dev/ttyComTap0`.
 
 Follow it with:
 ```bash

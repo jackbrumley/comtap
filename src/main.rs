@@ -68,7 +68,7 @@ enum Cmd {
     Status,
     /// Create or repair the virtual ports from the config (run as administrator)
     Ports,
-    /// Update to the latest release (runs the one-line installer)
+    /// Update to the latest release (runs the website's update script)
     Update,
     /// Run the bridges in this window instead of as a service (for testing)
     Run {
@@ -88,8 +88,7 @@ fn main() {
             logger::init(paths::logs_dir(), false);
             let r = tui::run(cli.open, cli.update_failed);
             setup::run_pending_relaunch();
-            update::run_pending();
-            r
+            r.and_then(|()| update::run_pending().map_err(anyhow::Error::msg))
         }
         #[cfg(windows)]
         Some(Cmd::Service) => service::dispatch(),
@@ -107,10 +106,7 @@ fn main() {
                 ),
                 Cmd::Restart => setup::restart(&mut setup::cli_reporter(&setup::RESTART)),
                 Cmd::Status => show_status(),
-                Cmd::Update => update::run_update().map_err(anyhow::Error::msg).map(|()| {
-                    update::run_pending();
-                    println!("{}", update::STARTED_MESSAGE);
-                }),
+                Cmd::Update => update_cli(),
                 Cmd::Ports => setup::repair(&mut setup::cli_reporter(&setup::REPAIR)),
                 Cmd::Run { config } => {
                     logger::init(paths::logs_dir(), true);
@@ -134,6 +130,16 @@ fn main() {
         eprintln!("Error: {e:#}");
         std::process::exit(1);
     }
+}
+
+/// `comtap update`: on Windows starts the updater's window and returns; on Linux this process
+/// becomes the update script, so it returns only if that failed.
+fn update_cli() -> Result<()> {
+    update::run_update().map_err(anyhow::Error::msg)?;
+    update::run_pending().map_err(anyhow::Error::msg)?;
+    #[cfg(windows)]
+    println!("{}", update::STARTED_MESSAGE);
+    Ok(())
 }
 
 /// `comtap install`: picks the config (given, next to the exe, or installed), then installs.

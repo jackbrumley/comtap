@@ -76,14 +76,14 @@ If a step fails, it shows × with the reason, and Enter goes back to the form to
 
 ## Updates
 
-ComTap checks GitHub for a newer version each time the screen opens. When one is out, the header says so and a dialog offers it once. **F1 → Update to X.Y.Z** (or `comtap update`) runs the same installer as a new install (on Windows in its own window; on Linux in the same terminal):
+ComTap checks GitHub for a newer version each time the screen opens. When one is out, the header says so and a dialog offers it once. **F1 → Update to X.Y.Z** (or `comtap update`) downloads ComTap's update script from brumley.info and runs it (on Windows in its own window; on Linux in the same terminal). The script runs the same installer as a new install:
 
 1. asks for admin (UAC) or your password (`sudo`),
 2. downloads the new program and checks it against GitHub's SHA-256 digest,
 3. stops the service and swaps the program,
 4. runs `comtap install`, which keeps your devices and settings and starts the service again.
 
-On Windows, if anything fails, the version you had starts again and says so. The update log is `C:\ProgramData\ComTap\logs\update.log` (Windows) or `/var/log/comtap/update.log` (Linux).
+If anything fails, the version you had starts again and says so. If the update script can't be downloaded, nothing changes, and ComTap points you to the release page to download the new version by hand. The update log is `C:\ProgramData\ComTap\logs\update.log` (Windows) or `/var/log/comtap/update.log` (Linux).
 
 ## Command line
 

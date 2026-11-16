@@ -237,6 +237,16 @@ jobs:
       - name: Data still arrives after the update
         run: ./.github/scripts/read-com-port.ps1 -Port COM9 -Expect "CI-TEST-123"
 
+      # Last before uninstalling: it updates to the latest published release.
+      - name: In-app update (the website's update.ps1, as F1 -> Update runs it)
+        env:
+          COMTAP_UPDATE_BASE_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ needs.prepare.outputs.tag }}/docs
+          COMTAP_NO_RELAUNCH: "1"
+        run: |
+          node scripts/test-in-app-update.mjs (Join-Path $env:ProgramFiles "ComTap\comtap.exe")
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ((Get-Service ComTap).Status -ne "Running") { Write-Error "the service did not come back"; exit 1 }
+
       - name: Uninstall
         run: |
           ./docs/uninstall.ps1 -RemoveDriver
@@ -312,6 +322,15 @@ jobs:
 
       - name: Data still arrives after the update
         run: bash .github/scripts/read-pty.sh /dev/ttyComTap0 CI-TEST-123
+
+      # Last before uninstalling: it updates to the latest published release.
+      - name: In-app update (the website's update.sh, as F1 -> Update runs it)
+        env:
+          COMTAP_UPDATE_BASE_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ needs.prepare.outputs.tag }}/docs
+          COMTAP_NO_RELAUNCH: "1"
+        run: |
+          node scripts/test-in-app-update.mjs /usr/local/bin/comtap
+          systemctl is-active comtap
 
       - name: Uninstall
         run: |

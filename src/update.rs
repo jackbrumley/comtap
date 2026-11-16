@@ -1,19 +1,17 @@
 //! In-app updates, per the Release and Update Standard
 //! (https://github.com/jackbrumley/jackbrumley.github.io/blob/main/RELEASE_STANDARD.md),
-//! "Terminal apps": the check reads GitHub's latest release, and updating re-runs the same
-//! one-line installer a new user runs.
+//! section 7, "Terminal apps": the check reads GitHub's latest release, and updating runs the
+//! website's update script (`docs/update.sh` / `docs/update.ps1`), which owns the whole
+//! procedure. ComTap only starts it, so a fix to the update reaches every installed version
+//! without a release.
 //!
-//! Windows: a running exe can't be replaced, so the installer runs in its own console window
-//! and ComTap exits. install.ps1 asks for admin (UAC) itself, stops the service, swaps the
-//! exe, starts the service again and opens the new version. If it fails, the installed
-//! version starts again with `--update-failed`.
+//! Windows: a running exe can't be replaced, so the script runs in its own console window and
+//! ComTap exits. Its output shows in that window and goes to `update.log`.
 //!
-//! Linux: ComTap leaves its screen and replaces itself with install.sh in the same terminal,
+//! Linux: ComTap leaves its screen and replaces itself with the script in the same terminal,
 //! so its output (and the sudo password prompt) shows there.
 use crate::{log, paths};
 use serde::Deserialize;
-#[cfg(any(windows, test))]
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
@@ -103,14 +101,44 @@ pub fn update_failed_message() -> String {
     )
 }
 
-/// The exe to start again with `--update-failed`: the installed copy, else this one.
-#[cfg(windows)]
-fn relaunch_target() -> Option<PathBuf> {
-    let installed = paths::installed_exe();
-    if installed.exists() {
-        return Some(installed);
+/// What the user is told when the update script could not be started.
+const NOT_STARTED_MESSAGE: &str = "The updater could not start, so nothing was changed. Download the new version from the release page instead: https://github.com/jackbrumley/comtap/releases/latest";
+
+/// Replaces the update scripts' base URL. Only the release's install test sets it.
+const BASE_URL_OVERRIDE_VARIABLE: &str = "COMTAP_UPDATE_BASE_URL";
+
+/// Where `update.sh` / `update.ps1` (and the installers they run) come from.
+fn base_url() -> Result<String, String> {
+    parse_base_url(std::env::var(BASE_URL_OVERRIDE_VARIABLE).ok())
+}
+
+/// The install site, or the override, which must be https and loses any trailing slash.
+fn parse_base_url(override_url: Option<String>) -> Result<String, String> {
+    let Some(override_url) = override_url else {
+        return Ok(INSTALL_SITE.to_string());
+    };
+    let trimmed = override_url.trim().trim_end_matches('/');
+    if !trimmed.starts_with("https://") {
+        return Err(format!(
+            "{BASE_URL_OVERRIDE_VARIABLE} must be an https:// URL, got '{override_url}'"
+        ));
     }
-    std::env::current_exe().ok()
+    Ok(trimmed.to_string())
+}
+
+/// The program the script opens with `--update-failed`: on Windows the installed copy when
+/// there is one, otherwise this one.
+fn relaunch_target() -> String {
+    #[cfg(windows)]
+    {
+        let installed = paths::installed_exe();
+        if installed.exists() {
+            return installed.to_string_lossy().into_owned();
+        }
+    }
+    std::env::current_exe()
+        .map(|exe| exe.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Wraps `value` in single quotes for PowerShell, which escapes an embedded quote by doubling it.
@@ -119,89 +147,94 @@ fn powershell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-/// Downloads install.ps1 and runs it from the file, so its `exit 1` on failure ends the
-/// script, not this updater, and sets `$LASTEXITCODE`. On failure the installed version
-/// starts again with `--update-failed`.
+/// The PowerShell the new console window runs: download update.ps1 and run it. If the download
+/// fails, the window stays open with the error and the release page.
 #[cfg(any(windows, test))]
-fn windows_update_script(relaunch: Option<&Path>) -> String {
-    let relaunch = match relaunch {
-        Some(path) => {
-            let path = powershell_single_quote(&path.to_string_lossy());
-            format!(
-                "if (Test-Path -LiteralPath {path}) {{ Start-Process -FilePath {path} -ArgumentList '--update-failed' }}"
-            )
-        }
-        None => "Write-Output '[comtap] No installed version found to start again'".to_string(),
-    };
+fn windows_launcher(base_url: &str, relaunch: &str) -> String {
+    let script_url = powershell_single_quote(&format!("{base_url}/update.ps1"));
+    let base_url = powershell_single_quote(base_url);
+    let relaunch = powershell_single_quote(relaunch);
+    let not_started = powershell_single_quote(NOT_STARTED_MESSAGE);
     format!(
-        r#"$installer = Join-Path $env:TEMP 'comtap-update-install.ps1'
+        r#"[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 try {{
-  Invoke-RestMethod -Uri '{INSTALL_SITE}/install.ps1' -OutFile $installer -ErrorAction Stop
-  $LASTEXITCODE = 0
-  & $installer
-  $succeeded = $LASTEXITCODE -eq 0
+  $updater = Invoke-RestMethod -Uri {script_url} -ErrorAction Stop
 }} catch {{
-  Write-Output "[comtap] ERROR: $_"
-  $succeeded = $false
+  Write-Host "[comtap-update] ERROR: could not download the updater: $_" -ForegroundColor Red
+  Write-Host {not_started}
+  Read-Host 'Press Enter to close' | Out-Null
+  exit 1
 }}
-if (-not $succeeded) {{
-  Write-Output '[comtap] Update failed; starting the installed version again'
-  {relaunch}
-  Read-Host 'Press Enter to close'
-}}
+& ([scriptblock]::Create($updater)) -BaseUrl {base_url} -Relaunch {relaunch}
 "#
     )
 }
 
-/// Starts the update in its own console window. ComTap should exit straight after, so the
-/// installer can replace comtap.exe.
+/// The bash `comtap update` and the screen replace themselves with on Linux. The base URL,
+/// relaunch path and message are its positional arguments ($1, $2, $3), never shell code. The
+/// script is downloaded first and run with `bash -c`, so a failed download says so instead of
+/// piping an empty script, and the update keeps the terminal as its input.
+#[cfg(any(not(windows), test))]
+const LINUX_LAUNCHER: &str = r#"updater="$(curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 10 "$1/update.sh")" || { echo "[comtap-update] ERROR: could not download $1/update.sh" >&2; echo "$3" >&2; exit 1; }
+exec bash -c "$updater" comtap-update --base-url "$1" --relaunch "$2""#;
+
+/// Said once the update has started and the screen has closed.
 #[cfg(windows)]
 pub const STARTED_MESSAGE: &str =
-    "The installer is running in a new window. Windows will ask for admin permission.";
-#[cfg(not(windows))]
-pub const STARTED_MESSAGE: &str = "The installer did not start.";
+    "The updater is running in a new window. Windows will ask for admin permission.";
 
-/// Windows: nothing to do (the installer already runs in its own window).
+/// Windows: nothing to do (the updater already runs in its own window).
 #[cfg(windows)]
-pub fn run_pending() {}
+pub fn run_pending() -> Result<(), String> {
+    Ok(())
+}
 
 #[cfg(not(windows))]
 static PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// The command `comtap update` and the screen run on Linux.
-#[cfg(any(not(windows), test))]
-fn linux_update_command() -> String {
-    format!("curl --proto '=https' --tlsv1.2 -sSf {INSTALL_SITE}/install.sh | bash")
-}
-
 /// Linux: the screen has closed and the terminal is back to normal, so replace this process
-/// with the installer. Returns only if that fails.
+/// with the update script. Returns only if no update is pending, or the exec failed.
 #[cfg(not(windows))]
-pub fn run_pending() {
+pub fn run_pending() -> Result<(), String> {
     use std::os::unix::process::CommandExt;
     if !PENDING.swap(false, std::sync::atomic::Ordering::Relaxed) {
-        return;
+        return Ok(());
     }
-    let cmd = linux_update_command();
-    log!("Starting the update: {cmd}");
-    println!("Updating ComTap: {cmd}");
-    let e = std::process::Command::new("bash").args(["-c", &cmd]).exec();
-    eprintln!("Could not start the update: {e}");
+    let base_url = base_url()?;
+    let relaunch = relaunch_target();
+    log!("Starting the updater from {base_url}/update.sh (relaunch: {relaunch})");
+    println!("Updating ComTap from {base_url}/update.sh");
+    let error = std::process::Command::new("bash")
+        .args([
+            "-c",
+            LINUX_LAUNCHER,
+            "comtap-update",
+            &base_url,
+            &relaunch,
+            NOT_STARTED_MESSAGE,
+        ])
+        .exec();
+    let message = format!("Could not start bash for the update: {error}. {NOT_STARTED_MESSAGE}");
+    log!("{message}");
+    Err(message)
 }
 
 /// Linux: marks the update to run once the screen has closed (see `run_pending`).
 #[cfg(not(windows))]
 pub fn run_update() -> Result<(), String> {
+    base_url()?;
     PENDING.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
+/// Windows: starts the updater in its own console window. ComTap exits straight after, so the
+/// installer can replace comtap.exe.
 #[cfg(windows)]
 pub fn run_update() -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-    let script = windows_update_script(relaunch_target().as_deref());
-    log!("Starting the update:\n{script}");
+    let script = windows_launcher(&base_url()?, &relaunch_target());
+    log!("Starting the updater:\n{script}");
     std::process::Command::new("powershell.exe")
         .env_remove("PSModulePath")
         .args([
@@ -214,7 +247,13 @@ pub fn run_update() -> Result<(), String> {
         .creation_flags(CREATE_NEW_CONSOLE)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("Could not start the update: {error}"))
+        .map_err(|error| {
+            let message = format!(
+                "Could not start PowerShell for the update: {error}. {NOT_STARTED_MESSAGE}"
+            );
+            log!("{message}");
+            message
+        })
 }
 
 /// Opens a web page in the default browser.
@@ -270,22 +309,57 @@ mod tests {
     }
 
     #[test]
-    fn linux_update_runs_the_one_line_installer() {
-        assert_eq!(
-            linux_update_command(),
-            "curl --proto '=https' --tlsv1.2 -sSf https://brumley.info/comtap/install.sh | bash"
-        );
+    fn base_url_defaults_to_the_install_site() {
+        assert_eq!(parse_base_url(None).unwrap(), "https://brumley.info/comtap");
     }
 
     #[test]
-    fn update_script_runs_the_installer_from_a_file_and_relaunches_on_failure() {
-        let script = windows_update_script(Some(Path::new(r"C:\Program Files\ComTap\comtap.exe")));
-        assert!(script.contains("https://brumley.info/comtap/install.ps1"));
-        assert!(script.contains("& $installer"));
-        assert!(
-            script.contains(
-                "'C:\\Program Files\\ComTap\\comtap.exe' -ArgumentList '--update-failed'"
-            )
+    fn base_url_override_must_be_https() {
+        assert_eq!(
+            parse_base_url(Some(
+                "https://raw.githubusercontent.com/jackbrumley/comtap/v1.2.3/docs/".to_string()
+            ))
+            .unwrap(),
+            "https://raw.githubusercontent.com/jackbrumley/comtap/v1.2.3/docs"
+        );
+        assert!(parse_base_url(Some("http://127.0.0.1:8000".to_string())).is_err());
+    }
+
+    #[test]
+    fn windows_launcher_runs_update_ps1_with_quoted_arguments() {
+        let script = windows_launcher(
+            "https://brumley.info/comtap",
+            r"C:\Program Files\o'brien\comtap.exe",
+        );
+        assert!(script.contains("Invoke-RestMethod -Uri 'https://brumley.info/comtap/update.ps1'"));
+        assert!(script.contains(
+            r"-BaseUrl 'https://brumley.info/comtap' -Relaunch 'C:\Program Files\o''brien\comtap.exe'"
+        ));
+    }
+
+    #[test]
+    fn linux_launcher_takes_its_values_as_arguments() {
+        assert!(LINUX_LAUNCHER.contains(r#""$1/update.sh""#));
+        assert!(LINUX_LAUNCHER.contains(r#"--base-url "$1" --relaunch "$2""#));
+        assert!(!LINUX_LAUNCHER.contains("brumley.info"));
+    }
+
+    /// Every shipped version relies on this line coming first (Release Standard section 7).
+    #[test]
+    fn update_scripts_print_the_started_line_first() {
+        let first_output = |script: &str, command: &str| {
+            script
+                .lines()
+                .find(|line| line.starts_with(command))
+                .map(str::to_string)
+        };
+        assert_eq!(
+            first_output(include_str!("../docs/update.ps1"), "Write-Output "),
+            Some("Write-Output \"[comtap-update] started\"".to_string())
+        );
+        assert_eq!(
+            first_output(include_str!("../docs/update.sh"), "echo "),
+            Some("echo \"[comtap-update] started\"".to_string())
         );
     }
 }

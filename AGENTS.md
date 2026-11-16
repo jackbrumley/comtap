@@ -139,7 +139,8 @@ necessary `#[allow]` carries a comment saying why.
 - `src/traffic.rs`: the per-device traffic log (RawTap's grouping), and
   reading it back for the screen. `src/codec.rs`: hex and text, as RawTap's.
 - `src/status.rs`: `status.json`, written by the service, read by the screen.
-- `src/update.rs`: the update check and running the installer.
+- `src/update.rs`: the update check and starting the website's update
+  script (`docs/update.sh` / `docs/update.ps1`).
 - `src/config.rs`, `src/paths.rs`, `src/logger.rs`: config, every on-disk
   location, the daily log.
 - `src/tui.rs`: the screen's state and keys (welcome, device form, progress,
@@ -151,13 +152,16 @@ necessary `#[allow]` carries a comment saying why.
 - `packaging/icons/`: `comtap.svg` is the source; the PNGs and `comtap.ico`
   are rendered from it.
 - `scripts/`: the file size check and the release tooling (`release:*` npm
-  scripts; asset names only from `release-assets.mjs`).
+  scripts; asset names only from `release-assets.mjs`;
+  `test-in-app-update.mjs` runs the installed build's real update path in
+  the release's install test).
 - `.github/workflows/`: `ci.yml` (checks) and `release.yml` (build, verify,
   end-to-end install test); `docs/RELEASE.md` is the procedure.
 - `docs/`: served by GitHub Pages at `https://brumley.info/comtap/`: the
   install page (`index.html`, using the shared files from
   `https://brumley.info/shared/v1/`), `install.ps1`, `uninstall.ps1`,
-  `install.sh`, `uninstall.sh`,
+  `install.sh`, `uninstall.sh`, the in-app updater's `update.sh` and
+  `update.ps1`,
   `assets/icon.png`; also `GUIDE.md`, `RELEASE.md` and `TODO.md`. Promotion
   to `main` deploys them.
 
@@ -198,9 +202,16 @@ necessary `#[allow]` carries a comment saying why.
   `/var/log/comtap/update.log`.
 - **In-app update:** the standard's "Terminal apps" flow (`src/update.rs`):
   a background check at start-up, the "Update available" dialog once a run,
-  F1 → Update to X.Y.Z / Check for updates, `comtap update`. On Windows the
-  installer runs in its own console window and ComTap exits; on Linux ComTap
-  leaves its screen and replaces itself with `install.sh` in the same
-  terminal.
+  F1 → Update to X.Y.Z / Check for updates, `comtap update`. The website
+  owns the update: ComTap only downloads `<site>/update.sh` or `update.ps1`
+  and runs it, and the script runs the installer. On Windows it runs in its
+  own console window and ComTap exits; on Linux ComTap leaves its screen and
+  replaces itself with it in the same terminal. No started-line wait (the
+  output is on screen); a failed download says so and points at the release
+  page. The scripts' arguments and output lines are a contract with every
+  shipped version: change them only compatibly. `COMTAP_UPDATE_BASE_URL`
+  (https only) points the updater elsewhere; only the release test sets it.
+  `install.sh` / `install.ps1` stay runnable directly, because 1.1.0 and
+  earlier run them without `update.*`.
 - **Release procedure:** follow `docs/RELEASE.md`. Never run
   `npm run release:promote` unless the maintainer asks.

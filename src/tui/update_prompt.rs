@@ -2,9 +2,8 @@
 //! current → latest with **Later**, **Release notes** and **Update now**. A check the user
 //! asked for that finds nothing new says "ComTap is up to date".
 //!
-//! The dialog opens by itself once a run, on the main screen: at once if nothing else is open,
-//! otherwise as soon as the screen is free. U on the main screen, or F1 → Check for updates,
-//! checks by hand.
+//! The dialog opens by itself once a run, on the device list: at once if nothing else is open,
+//! otherwise as soon as the list is free. F1 → Check for updates checks by hand.
 use super::draw::{badge, centered_box, wrap_words};
 use super::*;
 use crate::update::{self, UpdateCheck};

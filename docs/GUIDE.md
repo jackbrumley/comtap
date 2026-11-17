@@ -51,30 +51,54 @@ Double-click `comtap.exe`, or the **ComTap** shortcut that install puts on the P
 
 If a step fails, it shows × with the reason, and Enter goes back to the form to fix it.
 
-**After that:** the main screen.
+**After that:** ComTap opens on your device list. Everything works with four keys: **↑↓** choose, **Enter** open, **Esc** back, **F1** menu.
 
 ```
- ComTap   ● SERVICE RUNNING   driver com0com Running               v1.1.2 VIEW ONLY · F2 admin
-┌ Devices ───────────────────────────────────────────────────────────────────────────────────┐
-│ ► ● Dock 3 scanner      COM23  ↔ 10.1.128.186:51236     connected     last data 12:01:29   │
-│   ● Scale               COM24  ↔ 10.1.128.190:4001      retrying                           │
-└────────────────────────────────────────────────────────────────────────────────────────────┘
-┌ Traffic · Dock 3 scanner · hex+text (F8) ──────────────────────────────────────────────────┐
-│12:01:20.000 √ connected to 10.1.128.186:51236                                              │
-│12:01:29.120 RX HEX  30 39 38 37 36 35 34 33 32 31 0D 0A                                    │
-│12:01:29.120 RX TEXT 0987654321<CR><LF>                                                     │
-│12:01:40.002 TX HEX  54 0D                                                                  │
-│12:01:40.002 TX TEXT T<CR>                                                                  │
-└────────────────────────────────────────────────────────────────────────────────────────────┘
- F1 menu  ↑↓ device  Enter edit  Space on/off  A add  D delete  F8 format  PgUp/PgDn scroll  U updates  L logs  Q quit
+ ComTap   ● SERVICE RUNNING   driver com0com Running                       v1.3.0  ADMIN
+┌ Devices ───────────────────────────────────────────────────────────────────────────────┐
+│   + Add a device                                                                       │
+│ ► Dock 3 scanner          COM23       ● Connected                                      │
+│   Scale                   COM24       ● Can't reach the device                         │
+│   Spare scanner           COM25       ○ Off                                            │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+ ↑↓ choose  Enter open  F1 menu
 ```
 
-- **Anyone can view.** Changes need admin: ComTap offers to reopen itself as admin, straight back at what you chose.
-- **F1** opens the menu (type to filter): add, edit or delete a device, restart, stop or start the service, repair virtual ports, reinstall, uninstall, check for updates, open the log folder.
-- **U** checks for updates now; **L** opens the log folder. The top line shows the version you run.
+**Enter on a device** opens its page: what is happening in plain words, and what you can do.
+
+```
+┌ Dock 3 scanner ────────────────────────────────────────────────────────────────────────┐
+│  Connected. Your software reads the device on COM23.                                   │
+│                                                                                        │
+│  Device      10.1.128.186, TCP port 51236                                              │
+│  COM port    COM23                                                                     │
+│  Last data   12:01:29                                                                  │
+│                                                                                        │
+│ ►  Watch data                                                                          │
+│    Edit settings                                                                       │
+│    Delete this device                                                                  │
+│    Back                                                                                │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+ ↑↓ choose  Enter open  Esc back  F1 menu
+```
+
+- **Watch data** shows the device's traffic, every byte in hex and text. **←→** changes the format (hex+text, hex, text, compact), **PgUp/PgDn** scrolls.
+
+```
+┌ Watch data · Dock 3 scanner · hex+text ────────────────────────────────────────────────┐
+│12:01:20.000 √ connected to 10.1.128.186:51236                                          │
+│12:01:29.120 RX HEX  30 39 38 37 36 35 34 33 32 31 0D 0A                                │
+│12:01:29.120 RX TEXT 0987654321<CR><LF>                                                 │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+ ←→ format  PgUp/PgDn scroll  Esc back  F1 menu
+```
+
+- **Edit settings** is the device form, with one more field, **Status** (◄ On ►). Off keeps the device in the list with its settings and its COM port, so your software keeps its setting, but ComTap doesn't connect to it. That frees one of the device's connections (a barcode scanner may allow only a few). Enter saves and applies everything, with the same kind of checklist.
+- **Delete this device** asks first, then removes the device and its virtual port.
+- **Add a device** is the first line of the list.
+- **F1** opens the menu (type to filter): restart, stop or start the service, repair virtual ports, reinstall, uninstall, quit, update, check for updates, open the log folder. **Ctrl+C** also quits.
+- **Anyone can view.** Changes need admin: ComTap offers to reopen itself as admin, straight back at what you chose (F1 → Reopen as admin does it any time). The top line shows the version you run.
 - **Any number of devices:** each gets its own COM port. One service runs them all.
-- Saving a device applies it straight away, with the same kind of checklist.
-- **Space** (or **E**) turns the selected device off or on. A device that is off stays in the list with its IP, TCP port and COM port, and keeps its COM port, so your software keeps its setting, but ComTap doesn't connect to it. That frees one of the device's connections (a barcode scanner may allow only a few). Press Space again to turn it back on.
 
 ## Updates
 
@@ -120,7 +144,7 @@ comtap --version
 
 - `tcp` is the device's address. The device is the TCP server.
 - `com` is the port your software opens. Windows: `COM1` to `COM255`; each device gets its own pair. Linux: a name such as `ttyComTap0`, opened as `/dev/ttyComTap0`.
-- `"enabled": false` turns a device off (Space on the screen writes it). Left out, the device is on.
+- `"enabled": false` turns a device off (Status in Edit settings writes it). Left out, the device is on.
 
 ## Reliability
 

@@ -1,4 +1,5 @@
-//! Drawing every screen, in RawTap's style.
+//! Drawing the welcome, progress and browsing screens (list, device page, watch data) and
+//! the dialogs over them, in RawTap's style.
 use super::traffic_view::entry_lines;
 use super::*;
 
@@ -28,7 +29,7 @@ impl App {
             Screen::Welcome => self.draw_welcome(fr),
             Screen::Form(f) => self.draw_form(fr, f),
             Screen::Progress(p) => self.draw_progress(fr, p),
-            Screen::Main => self.draw_main(fr),
+            Screen::Main | Screen::Device { .. } | Screen::Monitor { .. } => self.draw_browse(fr),
         }
     }
 
@@ -211,18 +212,49 @@ impl App {
         fr.render_widget(Paragraph::new(lines).block(block), area);
     }
 
-    fn draw_main(&self, fr: &mut Frame) {
-        let rows = self.cfg.links.len().max(1) as u16 + 3;
-        let [head, devs, tr, msg, foot] = Layout::vertical([
+    /// The list, a device's page or its data: header, body, message line, key line, and any
+    /// dialog over them.
+    fn draw_browse(&self, fr: &mut Frame) {
+        let [head, body, msg, foot] = Layout::vertical([
             Constraint::Length(1),
-            Constraint::Length(rows.min(12)),
             Constraint::Min(4),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .areas(fr.area());
+        self.draw_header(fr, head);
+        let keys = match self.screen {
+            Screen::Device { idx, sel } => {
+                self.draw_device(fr, body, idx, sel);
+                "↑↓ choose  Enter open  Esc back  F1 menu"
+            }
+            Screen::Monitor { idx } => {
+                self.draw_monitor(fr, body, idx);
+                "←→ format  PgUp/PgDn scroll  Esc back  F1 menu"
+            }
+            _ => {
+                self.draw_list(fr, body);
+                "↑↓ choose  Enter open  F1 menu"
+            }
+        };
+        let m = match &self.msg {
+            Some((true, m)) => Line::from(Span::styled(
+                format!(" {m}"),
+                Style::new().fg(Color::LightRed),
+            )),
+            Some((false, m)) => {
+                Line::from(Span::styled(format!(" {m}"), Style::new().fg(Color::Green)))
+            }
+            None if !self.admin => Line::from(Span::styled(words::VIEW_ONLY, DIM)),
+            None => Line::from(""),
+        };
+        fr.render_widget(Paragraph::new(m), msg);
+        fr.render_widget(Paragraph::new(hints(keys)), foot);
+        self.draw_overlay(fr);
+    }
 
-        // Header, like RawTap's: name badge, state badge, details.
+    /// Like RawTap's: name badge, service state, driver; the version and admin badge on the right.
+    fn draw_header(&self, fr: &mut Frame, head: Rect) {
         let (state, bg, fg) = match self.svc.as_str() {
             "Running" => ("● SERVICE RUNNING", Color::Green, Color::Black),
             "not installed" => ("NOT INSTALLED", Color::Yellow, Color::Black),
@@ -268,28 +300,9 @@ impl App {
         spans.extend(version);
         spans.push(right);
         fr.render_widget(Paragraph::new(Line::from(spans)), head);
+    }
 
-        self.draw_devices(fr, devs);
-
-        self.draw_traffic(fr, tr);
-
-        let m = match &self.msg {
-            Some((true, m)) => Line::from(Span::styled(
-                format!(" {m}"),
-                Style::new().fg(Color::LightRed),
-            )),
-            Some((false, m)) => {
-                Line::from(Span::styled(format!(" {m}"), Style::new().fg(Color::Green)))
-            }
-            None if !self.admin => Line::from(Span::styled(words::VIEW_ONLY, DIM)),
-            None => Line::from(""),
-        };
-        fr.render_widget(Paragraph::new(m), msg);
-        fr.render_widget(
-            Paragraph::new(hints("F1 menu  ↑↓ device  Enter edit  Space on/off  A add  D delete  F8 format  PgUp/PgDn scroll  U updates  L logs  Q quit")),
-            foot,
-        );
-
+    fn draw_overlay(&self, fr: &mut Frame) {
         match &self.overlay {
             Overlay::None => {}
             Overlay::Menu { sel, filter } => self.draw_menu(fr, *sel, filter),
@@ -301,7 +314,9 @@ impl App {
                 words::ADMIN_BUTTON,
             ),
             Overlay::ConfirmDelete(i) => {
-                let l = &self.cfg.links[*i];
+                let Some(l) = self.cfg.links.get(*i) else {
+                    return;
+                };
                 confirm(
                     fr,
                     " Delete device ",
@@ -347,15 +362,14 @@ impl App {
             ),
         ]));
         lines.push("".into());
-        for (i, (_, label, key, admin)) in items.iter().enumerate() {
+        for (i, (_, label, admin)) in items.iter().enumerate() {
             let focused = i == sel;
             let lock = if *admin && !self.admin {
                 " (admin)"
             } else {
                 ""
             };
-            let text = format!("{label}{lock}");
-            let mut spans = vec![
+            lines.push(Line::from(vec![
                 Span::styled(
                     if focused {
                         format!(" {MARK} ")
@@ -365,16 +379,14 @@ impl App {
                     Style::new().fg(ACCENT),
                 ),
                 Span::styled(
-                    format!("{text:<38}"),
+                    format!("{:<44}", format!("{label}{lock}")),
                     if focused {
                         Style::new().fg(Color::Black).bg(ACCENT)
                     } else {
                         Style::new()
                     },
                 ),
-            ];
-            spans.push(Span::styled(format!(" {key:>5}"), DIM));
-            lines.push(Line::from(spans));
+            ]));
         }
         if items.is_empty() {
             lines.push(Line::from(Span::styled("   nothing matches", DIM)));
@@ -387,16 +399,17 @@ impl App {
         fr.render_widget(Clear, area);
         let block = Block::bordered()
             .title(title("Menu"))
-            .title_bottom(hints("↑↓ move  Enter run  ←→ change  Esc close"))
+            .title_bottom(hints("↑↓ choose  Enter run  Esc close"))
             .border_style(Style::new().fg(ACCENT));
         fr.render_widget(Paragraph::new(lines).block(block), area);
     }
 
-    fn draw_traffic(&self, fr: &mut Frame, area: Rect) {
+    /// Watch data: one device's traffic, newest at the bottom.
+    fn draw_monitor(&self, fr: &mut Frame, area: Rect, idx: usize) {
         let name = self
             .cfg
             .links
-            .get(self.sel)
+            .get(idx)
             .map(|l| l.name.as_str())
             .unwrap_or("-");
         let inner_w = area.width.saturating_sub(2);
@@ -416,7 +429,7 @@ impl App {
         let end = rows.len() - scroll;
         let start = end.saturating_sub(inner_h);
         let mut block = Block::bordered()
-            .title(format!(" Traffic · {name} · {} (F8) ", self.fmt.name()))
+            .title(format!(" Watch data · {name} · {} ", self.fmt.name()))
             .border_style(Style::new().fg(ACCENT));
         if scroll > 0 {
             block = block.title_top(

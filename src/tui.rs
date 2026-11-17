@@ -1,7 +1,9 @@
 //! The interactive screen, styled like RawTap: double-click comtap.exe or the desktop shortcut.
 //!
-//! New user:  Welcome -> device form -> install checklist -> main screen.
-//! Installed: main screen. Anyone can look; changes reopen ComTap as admin.
+//! New user:  Welcome -> device form -> install checklist -> device list.
+//! Installed: device list -> a device's page -> watch its data, edit its settings or delete it.
+//! Everything else is in the F1 menu. Keys: ↑↓ choose, Enter open, Esc back, F1 menu.
+//! Anyone can look; changes reopen ComTap as admin.
 use crate::config::{Config, Link};
 use crate::setup::{self, Plan, St};
 use crate::status::StatusFile;
@@ -9,6 +11,7 @@ use crate::traffic::{self, Dir};
 use crate::update::UpdateCheck;
 use crate::{codec, paths, ports, service, status};
 use anyhow::Result;
+use devices::DEVICE_DELETE;
 use form::{F_COM, F_HOST, F_NAME, F_PORT, Form, host_of, port_of};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -27,7 +30,6 @@ const TAIL_BYTES: u64 = 256 * 1024;
 // Glyphs that the default console font (Consolas) has. ▶ ⇄ ✔ ✘ show as boxes there.
 const MARK: &str = "►";
 const LEFT: &str = "◄";
-const BOTH: &str = "↔";
 const OK: &str = "√";
 const BAD: &str = "×";
 
@@ -50,6 +52,14 @@ impl Fmt {
             Fmt::Text => Fmt::Compact,
         }
     }
+    fn prev(self) -> Fmt {
+        match self {
+            Fmt::Compact => Fmt::Text,
+            Fmt::HexText => Fmt::Compact,
+            Fmt::Hex => Fmt::HexText,
+            Fmt::Text => Fmt::Hex,
+        }
+    }
     fn name(self) -> &'static str {
         match self {
             Fmt::Compact => "compact",
@@ -62,6 +72,7 @@ impl Fmt {
 
 /// Where to go when a progress screen is closed.
 enum After {
+    /// The device list.
     Main,
     /// Back to the form with these values, if the plan failed.
     FormOnFail {
@@ -90,7 +101,17 @@ enum Screen {
     Welcome,
     Form(Form),
     Progress(Progress),
+    /// The device list (the start screen once ComTap is set up).
     Main,
+    /// One device's page: its state in plain words, and what you can do with it.
+    Device {
+        idx: usize,
+        sel: usize,
+    },
+    /// One device's traffic, full screen.
+    Monitor {
+        idx: usize,
+    },
 }
 
 enum Overlay {
@@ -116,12 +137,10 @@ enum Overlay {
     },
 }
 
+/// What the F1 menu can do. Everything about one device is on its page instead.
 #[derive(Clone, Copy, PartialEq)]
 enum Act {
-    Add,
-    Edit,
-    Toggle,
-    Delete,
+    Admin,
     Install,
     Restart,
     Stop,
@@ -131,7 +150,6 @@ enum Act {
     UpdateNow,
     CheckUpdates,
     Folder,
-    Format,
     Quit,
 }
 
@@ -139,7 +157,8 @@ struct App {
     admin: bool,
     cfg: Config,
     cfg_note: Option<String>,
-    sel: usize,
+    /// The device list's cursor: 0 is "+ Add a device", then device `row - 1`.
+    row: usize,
     status: Option<StatusFile>,
     svc: String,
     drv: String,
@@ -229,7 +248,7 @@ impl App {
             admin: service::is_admin(),
             cfg,
             cfg_note,
-            sel: 0,
+            row: 0,
             status: None,
             installed: svc != "not installed",
             svc,
@@ -262,8 +281,19 @@ impl App {
             Some(o) if o.starts_with("edit:") && self.admin => {
                 let i = o[5..].parse::<usize>().unwrap_or(0);
                 if i < self.cfg.links.len() {
-                    self.sel = i;
+                    self.row = i + 1;
                     return Screen::Form(self.form(Some(i)));
+                }
+            }
+            // Reopened as admin to delete a device: back on its page, at Delete.
+            Some(o) if o.starts_with("device:") => {
+                let i = o[7..].parse::<usize>().unwrap_or(0);
+                if i < self.cfg.links.len() {
+                    self.row = i + 1;
+                    return Screen::Device {
+                        idx: i,
+                        sel: DEVICE_DELETE,
+                    };
                 }
             }
             Some("menu") => {
@@ -320,7 +350,7 @@ impl App {
         let (cfg, note) = load_config();
         self.cfg = cfg;
         self.cfg_note = note;
-        self.sel = self.sel.min(self.cfg.links.len().saturating_sub(1));
+        self.row = self.row.min(self.cfg.links.len());
         self.svc = service::state_text();
         self.drv = service::driver_state_text();
         self.installed = self.svc != "not installed";
@@ -357,14 +387,15 @@ impl App {
             self.status = status::read();
             self.last_status = Instant::now();
         }
-        if self.last_traffic.elapsed() > Duration::from_millis(250) {
+        // Traffic is read only while a device's data is on screen.
+        let watched = match self.screen {
+            Screen::Monitor { idx } => self.cfg.links.get(idx).map(|l| l.com.clone()),
+            _ => None,
+        };
+        if let Some(com) =
+            watched.filter(|_| self.last_traffic.elapsed() > Duration::from_millis(250))
+        {
             self.last_traffic = Instant::now();
-            let com = self
-                .cfg
-                .links
-                .get(self.sel)
-                .map(|l| l.com.clone())
-                .unwrap_or_default();
             let day = chrono::Local::now().format("%Y-%m-%d").to_string();
             let len = std::fs::metadata(traffic::file_for(&paths::traffic_dir(), &com, &day))
                 .map(|m| m.len())
@@ -435,7 +466,7 @@ fn trunc(s: &str, n: usize) -> String {
     }
 }
 
-mod device_list;
+mod devices;
 mod draw;
 mod form;
 mod keys;

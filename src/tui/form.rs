@@ -1,5 +1,6 @@
 //! The device form: adding or editing a device (name, IP, TCP port, the port the software
-//! opens), its keys, the connection test, and drawing it.
+//! opens, on or off), its keys, the connection test, and drawing it. Enter saves and applies
+//! everything at once.
 use super::draw::{badge, hints, title, top_box, wrap_words};
 use super::*;
 
@@ -7,18 +8,23 @@ pub(super) const F_NAME: usize = 0;
 pub(super) const F_HOST: usize = 1;
 pub(super) const F_PORT: usize = 2;
 pub(super) const F_COM: usize = 3;
-pub(super) const LABELS: [&str; 4] = ["Name", "Device IP", "TCP port", words::PORT_LABEL];
-pub(super) const HELP: [&str; 4] = [
+pub(super) const F_ON: usize = 4;
+pub(super) const LABELS: [&str; 5] = ["Name", "Device IP", "TCP port", words::PORT_LABEL, "Status"];
+pub(super) const HELP: [&str; 5] = [
     "A label for this device, shown on this screen and in the logs. For example: Dock 3 scanner.",
     "The device's IP address or network name. ComTap connects to it as a TCP client.",
     "The TCP port the device sends its data on. You find it in the device's network settings.",
     words::PORT_HELP,
+    "On: ComTap connects to the device. Off: it doesn't, which frees one of the device's connections; the port stays for your software. Use ←→ to change it.",
 ];
 
 pub(super) struct Form {
     /// None = a new device.
     pub(super) idx: Option<usize>,
+    /// Name, IP, TCP port and port, by F_NAME..F_COM.
     pub(super) fields: [String; 4],
+    /// The Status field (F_ON).
+    pub(super) enabled: bool,
     pub(super) focus: usize,
     pub(super) coms: Vec<String>,
     /// True when ComTap isn't installed yet: Enter installs.
@@ -32,18 +38,20 @@ pub(super) struct Form {
 
 impl App {
     pub(super) fn form(&self, idx: Option<usize>) -> Form {
-        let (name, host, port, com) = match idx.and_then(|i| self.cfg.links.get(i)) {
+        let (name, host, port, com, enabled) = match idx.and_then(|i| self.cfg.links.get(i)) {
             Some(l) => (
                 l.name.clone(),
                 host_of(&l.tcp),
                 port_of(&l.tcp),
                 l.com.clone(),
+                l.enabled,
             ),
             None => (
                 format!("Device {}", self.cfg.links.len() + 1),
                 String::new(),
                 String::new(),
                 String::new(),
+                true,
             ),
         };
         let taken: Vec<String> = self
@@ -75,6 +83,7 @@ impl App {
         Form {
             idx,
             fields: [name, host, port, com],
+            enabled,
             focus: if idx.is_none() { F_HOST } else { F_NAME },
             coms,
             install: !self.installed,
@@ -86,20 +95,25 @@ impl App {
     }
 
     pub(super) fn key_form(&mut self, mut f: Form, k: KeyEvent) {
-        let back = |app: &mut App| {
-            if app.installed || !app.cfg.links.is_empty() {
-                app.screen = Screen::Main;
-            } else {
-                app.screen = Screen::Welcome;
-            }
+        let fields = LABELS.len();
+        let back = |app: &mut App, idx: Option<usize>| {
+            app.screen = match idx {
+                Some(idx) if idx < app.cfg.links.len() => Screen::Device {
+                    idx,
+                    sel: super::devices::DEVICE_EDIT,
+                },
+                _ if app.installed || !app.cfg.links.is_empty() => Screen::Main,
+                _ => Screen::Welcome,
+            };
         };
         match k.code {
             KeyCode::Esc => {
-                back(self);
+                back(self, f.idx);
                 return;
             }
-            KeyCode::Up | KeyCode::BackTab => f.focus = (f.focus + 3) % 4,
-            KeyCode::Down | KeyCode::Tab => f.focus = (f.focus + 1) % 4,
+            KeyCode::Up | KeyCode::BackTab => f.focus = (f.focus + fields - 1) % fields,
+            KeyCode::Down | KeyCode::Tab => f.focus = (f.focus + 1) % fields,
+            KeyCode::Left | KeyCode::Right if f.focus == F_ON => f.enabled = !f.enabled,
             KeyCode::Left | KeyCode::Right if f.focus == F_COM && !f.coms.is_empty() => {
                 let pos = f
                     .coms
@@ -115,10 +129,10 @@ impl App {
                 f.fields[F_COM] = f.coms[next].clone();
                 f.note = None;
             }
-            KeyCode::Backspace if f.focus != F_COM => {
+            KeyCode::Backspace if f.focus < F_COM => {
                 f.fields[f.focus].pop();
             }
-            KeyCode::Char(c) if f.focus != F_COM => {
+            KeyCode::Char(c) if f.focus < F_COM => {
                 let ok = match f.focus {
                     F_PORT => c.is_ascii_digit() && f.fields[F_PORT].len() < 5,
                     F_HOST => !c.is_whitespace(),
@@ -156,11 +170,7 @@ impl App {
                         },
                         tcp: format!("{}:{}", f.fields[F_HOST].trim(), f.fields[F_PORT].trim()),
                         com: f.fields[F_COM].clone(),
-                        // Editing keeps the device on or off; a new device starts on.
-                        enabled: f
-                            .idx
-                            .and_then(|i| self.cfg.links.get(i))
-                            .is_none_or(|l| l.enabled),
+                        enabled: f.enabled,
                     };
                     let mut new = self.cfg.clone();
                     match f.idx {
@@ -170,7 +180,7 @@ impl App {
                     match new.validate() {
                         Ok(()) => {
                             if f.idx.is_none() {
-                                self.sel = new.links.len() - 1;
+                                self.row = new.links.len();
                             }
                             let after = After::FormOnFail {
                                 idx: f.idx,
@@ -237,6 +247,22 @@ impl App {
                 ),
                 Span::styled(format!("{label:<14}"), label_style),
             ];
+            if i == F_ON {
+                if focused {
+                    spans.push(Span::styled(format!("{LEFT} "), DIM));
+                }
+                let (shown, style) = if f.enabled {
+                    (" On ", Style::new().fg(Color::Black).bg(Color::Green))
+                } else {
+                    (" Off ", Style::new().fg(Color::White).bg(Color::DarkGray))
+                };
+                spans.push(Span::styled(shown, style));
+                if focused {
+                    spans.push(Span::styled(format!(" {MARK}"), DIM));
+                }
+                lines.push(Line::from(spans));
+                continue;
+            }
             let value = &f.fields[i];
             if i == F_COM {
                 if focused {
@@ -346,7 +372,7 @@ impl App {
         let block = Block::bordered()
             .title(title(heading))
             .title_bottom(hints(
-                "↑↓ move  ←→ change  type to edit  F5 test  Enter save  Esc back",
+                "↑↓ choose  ←→ change  type to edit  F5 test  Enter save  Esc back",
             ))
             .border_style(Style::new().fg(ACCENT));
         fr.render_widget(Paragraph::new(lines).block(block), area);

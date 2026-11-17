@@ -15,8 +15,12 @@ mod os {
         "ComTap will reopen as admin, and Windows will ask for permission.",
     ];
     pub const ADMIN_BUTTON: &str = "reopen as admin";
-    pub const VIEW_ONLY: &str = " View only. Changes need admin: press F2.";
-    pub const VIEW_ONLY_BADGE: &str = "VIEW ONLY · F2 admin";
+    pub const VIEW_ONLY: &str =
+        " View only. Changes need admin: press F1 and choose Reopen as admin.";
+    pub const VIEW_ONLY_BADGE: &str = "VIEW ONLY";
+    pub const REOPEN_AS_ADMIN: &str = "Reopen as admin";
+    pub const REPAIR_PORTS: &str = "Repair virtual COM ports";
+    pub const NO_DEVICES: &str = "No devices yet. A device is a network (TCP) device, such as an Ethernet barcode scanner, that ComTap shows to your software as a COM port. Press Enter on Add a device to set one up.";
     pub const DRIVER_LABEL: &str = "driver com0com";
     pub const UNINSTALL_LINES: [&str; 2] = [
         "Remove the service, its virtual COM ports and the desktop shortcut?",
@@ -45,8 +49,12 @@ mod os {
         "ComTap will reopen with sudo, which asks for your password.",
     ];
     pub const ADMIN_BUTTON: &str = "reopen with sudo";
-    pub const VIEW_ONLY: &str = " View only. Changes need root: press F2.";
-    pub const VIEW_ONLY_BADGE: &str = "VIEW ONLY · F2 sudo";
+    pub const VIEW_ONLY: &str =
+        " View only. Changes need root: press F1 and choose Reopen with sudo.";
+    pub const VIEW_ONLY_BADGE: &str = "VIEW ONLY";
+    pub const REOPEN_AS_ADMIN: &str = "Reopen with sudo";
+    pub const REPAIR_PORTS: &str = "Repair the ports";
+    pub const NO_DEVICES: &str = "No devices yet. A device is a network (TCP) device, such as an Ethernet barcode scanner, that ComTap shows to your software as a serial port. Press Enter on Add a device to set one up.";
     pub const DRIVER_LABEL: &str = "ports";
     pub const UNINSTALL_LINES: [&str; 2] = [
         "Remove the service and its /dev links?",

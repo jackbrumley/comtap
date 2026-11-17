@@ -112,6 +112,8 @@ fn draws_every_screen_at_any_size() {
                 Some(Err("x".into())),
             ),
             Screen::Main,
+            Screen::Device { idx: 0, sel: 2 },
+            Screen::Monitor { idx: 0 },
         ]
     };
     for (w, h) in [(120, 40), (80, 24), (40, 12), (20, 6)] {
@@ -122,30 +124,32 @@ fn draws_every_screen_at_any_size() {
                 render(&app, w, h);
             }
         }
-        app.screen = Screen::Main;
-        for o in 0..6 {
-            app.overlay = match o {
-                0 => Overlay::Menu {
-                    sel: 2,
-                    filter: String::new(),
-                },
-                1 => Overlay::Admin {
-                    open: "menu".into(),
-                },
-                2 => Overlay::ConfirmDelete(1),
-                3 => Overlay::Update {
-                    check: sample_update(),
-                    sel: 2,
-                },
-                4 => Overlay::Notice {
-                    title: "Update failed".into(),
-                    lines: vec![crate::update::update_failed_message()],
-                },
-                _ => Overlay::ConfirmUninstall,
-            };
-            render(&app, w, h);
+        for screen in [Screen::Main, Screen::Device { idx: 1, sel: 0 }] {
+            app.screen = screen;
+            for o in 0..6 {
+                app.overlay = match o {
+                    0 => Overlay::Menu {
+                        sel: 2,
+                        filter: String::new(),
+                    },
+                    1 => Overlay::Admin {
+                        open: "menu".into(),
+                    },
+                    2 => Overlay::ConfirmDelete(1),
+                    3 => Overlay::Update {
+                        check: sample_update(),
+                        sel: 2,
+                    },
+                    4 => Overlay::Notice {
+                        title: "Update failed".into(),
+                        lines: vec![crate::update::update_failed_message()],
+                    },
+                    _ => Overlay::ConfirmUninstall,
+                };
+                render(&app, w, h);
+            }
+            app.overlay = Overlay::None;
         }
-        app.overlay = Overlay::None;
     }
 }
 
@@ -154,30 +158,17 @@ fn draws_every_screen_at_any_size() {
 fn show_screens() {
     let mut app = sample();
     app.fmt = Fmt::HexText;
+    app.row = 1;
     let shots: Vec<(&str, Screen)> = vec![
         ("WELCOME", Screen::Welcome),
-        ("FORM", Screen::Form(app.form(None))),
+        ("LIST", Screen::Main),
+        ("DEVICE", Screen::Device { idx: 0, sel: 0 }),
+        ("WATCH DATA", Screen::Monitor { idx: 0 }),
+        ("EDIT", Screen::Form(app.form(Some(0)))),
         (
             "PROGRESS",
             progress(&app, &setup::INSTALL, install_states(6, St::Running), None),
         ),
-        (
-            "DONE",
-            progress(
-                &app,
-                &setup::INSTALL,
-                {
-                    let mut s = install_states(10, St::Done("1 connected".into()));
-                    s[2] = St::Done(paths::installed_exe().display().to_string());
-                    if cfg!(windows) {
-                        s[6] = St::Done("COM23".into());
-                    }
-                    s
-                },
-                Some(Ok(())),
-            ),
-        ),
-        ("MAIN", Screen::Main),
     ];
     for (name, s) in shots {
         app.screen = s;
@@ -185,16 +176,10 @@ fn show_screens() {
     }
     app.screen = Screen::Main;
     app.overlay = Overlay::Menu {
-        sel: 3,
+        sel: 0,
         filter: String::new(),
     };
     println!("===== MENU\n{}", render(&app, 100, 30));
-    app.update = Some(sample_update());
-    app.overlay = Overlay::Update {
-        check: sample_update(),
-        sel: 2,
-    };
-    println!("===== UPDATE\n{}", render(&app, 100, 30));
 }
 
 fn sample_update() -> UpdateCheck {
@@ -206,21 +191,12 @@ fn sample_update() -> UpdateCheck {
     }
 }
 
-#[test]
-fn enter_opens_edit_form() {
-    let mut app = sample();
-    app.admin = true;
-    app.key(KeyEvent::new(KeyCode::Enter, event::KeyModifiers::NONE));
-    assert!(
-        matches!(app.screen, Screen::Form(_)),
-        "Enter did not open the form"
-    );
+fn press(app: &mut App, code: KeyCode) {
+    app.key(KeyEvent::new(code, event::KeyModifiers::NONE));
 }
 
-#[test]
-fn shows_waiting_when_no_software_has_the_port() {
-    let mut app = sample();
-    app.status = Some(StatusFile {
+fn connected_but_unopened() -> StatusFile {
+    StatusFile {
         written: String::new(),
         written_unix: chrono::Local::now().timestamp(),
         pid: 0,
@@ -232,10 +208,130 @@ fn shows_waiting_when_no_software_has_the_port() {
             software_open: Some(false),
             ..Default::default()
         }],
-    });
+    }
+}
+
+#[test]
+fn starts_on_the_device_list_without_traffic() {
+    let s = render(&sample(), 110, 30);
+    assert!(s.contains("+ Add a device"), "{s}");
+    assert!(s.contains("Dock 3 scanner"), "{s}");
+    assert!(!s.contains("Watch data"), "{s}");
+    assert!(
+        !s.contains("connected to 10.1.128.186"),
+        "traffic on the list: {s}"
+    );
+    assert!(s.contains("↑↓ choose  Enter open  F1 menu"), "{s}");
+}
+
+#[test]
+fn no_devices_explains_what_a_device_is() {
+    let mut app = sample();
+    app.cfg.links.clear();
     let s = render(&app, 110, 30);
-    assert!(s.contains("waiting for COM23"), "{s}");
-    assert!(s.contains("No software has COM23 open"), "{s}");
+    assert!(s.contains("+ Add a device"), "{s}");
+    assert!(s.contains("No devices yet"), "{s}");
+}
+
+#[test]
+fn enter_steps_through_list_device_page_and_watch_data() {
+    let mut app = sample();
+    app.admin = true;
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.screen, Screen::Device { idx: 0, sel: 0 }));
+    let page = render(&app, 110, 30);
+    for item in ["Watch data", "Edit settings", "Delete this device", "Back"] {
+        assert!(page.contains(item), "{page}");
+    }
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.screen, Screen::Monitor { idx: 0 }));
+    let watch = render(&app, 110, 30);
+    assert!(watch.contains("Watch data · Dock 3 scanner"), "{watch}");
+    assert!(watch.contains("connected to 10.1.128.186"), "{watch}");
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.fmt, Fmt::Hex);
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(app.screen, Screen::Device { idx: 0, .. }));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(app.screen, Screen::Form(_)),
+        "Edit settings did not open the form"
+    );
+    press(&mut app, KeyCode::Esc);
+    assert!(
+        matches!(app.screen, Screen::Device { idx: 0, .. }),
+        "Esc left the device"
+    );
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.overlay, Overlay::ConfirmDelete(0)));
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(app.overlay, Overlay::None));
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(app.screen, Screen::Main));
+}
+
+#[test]
+fn letters_do_nothing_on_the_list() {
+    let mut app = sample();
+    app.admin = true;
+    for c in ['q', 'a', 'd', 'u', 'l', ' ', 'e', 's'] {
+        press(&mut app, KeyCode::Char(c));
+        assert!(!app.quit, "{c} quit");
+        assert!(matches!(app.screen, Screen::Main), "{c} changed the screen");
+        assert!(matches!(app.overlay, Overlay::None), "{c} opened something");
+    }
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.quit, "Esc quit from the list");
+    app.key(KeyEvent::new(
+        KeyCode::Char('c'),
+        event::KeyModifiers::CONTROL,
+    ));
+    assert!(app.quit, "Ctrl+C did not quit");
+}
+
+#[test]
+fn view_only_add_and_edit_offer_admin() {
+    let mut app = sample();
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.overlay, Overlay::Admin { ref open } if open == "add"));
+    app.overlay = Overlay::None;
+    app.screen = Screen::Device { idx: 1, sel: 1 };
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.overlay, Overlay::Admin { ref open } if open == "edit:1"));
+}
+
+#[test]
+fn menu_has_service_quit_updates_and_logs_but_no_device_actions() {
+    let app = sample();
+    let labels: Vec<String> = app.menu_items().into_iter().map(|i| i.1).collect();
+    assert_eq!(
+        labels.first().map(String::as_str),
+        Some(words::REOPEN_AS_ADMIN)
+    );
+    assert_eq!(
+        labels.last().map(String::as_str),
+        Some("Open the log folder")
+    );
+    assert!(labels.iter().any(|l| l == "Quit"), "{labels:?}");
+    assert!(
+        labels.iter().any(|l| l.starts_with("Check for updates")),
+        "{labels:?}"
+    );
+    assert!(!labels.iter().any(|l| l.contains("device")), "{labels:?}");
+}
+
+#[test]
+fn waiting_for_software_in_plain_words() {
+    let mut app = sample();
+    app.status = Some(connected_but_unopened());
+    let list = render(&app, 110, 30);
+    assert!(list.contains("Waiting for your software"), "{list}");
+    app.screen = Screen::Device { idx: 0, sel: 0 };
+    let page = render(&app, 110, 30);
+    assert!(page.contains("no software has COM23 open"), "{page}");
 }
 
 #[test]
@@ -277,23 +373,29 @@ fn update_dialog_waits_until_the_main_screen_is_free() {
 }
 
 #[test]
-fn a_device_that_is_off_shows_off_and_how_to_turn_it_on() {
+fn a_device_that_is_off_says_so_and_how_to_turn_it_on() {
     let mut app = sample();
     app.cfg.links[0].enabled = false;
-    let s = render(&app, 120, 30);
-    assert!(s.contains("○ Dock 3 scanner"), "{s}");
-    assert!(s.contains("off"), "{s}");
-    assert!(s.contains("Space turns it on"), "{s}");
-    assert!(s.contains("● Scale"), "{s}");
+    let list = render(&app, 120, 30);
+    assert!(list.contains("○ Off"), "{list}");
+    app.screen = Screen::Device { idx: 0, sel: 0 };
+    let page = render(&app, 120, 30);
+    assert!(page.contains("choose Edit settings"), "{page}");
 }
 
 #[test]
-fn space_needs_admin_to_turn_a_device_off() {
+fn status_field_toggles_with_left_right() {
     let mut app = sample();
-    app.key(KeyEvent::new(KeyCode::Char(' '), event::KeyModifiers::NONE));
-    assert!(
-        matches!(app.overlay, Overlay::Admin { .. }),
-        "view only changed a device"
-    );
-    assert!(app.cfg.links[0].enabled);
+    app.admin = true;
+    let mut f = app.form(Some(0));
+    assert!(f.enabled);
+    f.focus = form::F_ON;
+    app.screen = Screen::Form(f);
+    press(&mut app, KeyCode::Right);
+    let Screen::Form(f) = &app.screen else {
+        panic!("left the form")
+    };
+    assert!(!f.enabled);
+    let s = render(&app, 110, 30);
+    assert!(s.contains("Status") && s.contains(" Off "), "{s}");
 }

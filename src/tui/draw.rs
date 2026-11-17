@@ -21,6 +21,13 @@ pub(super) fn hints(t: &str) -> Line<'static> {
     Line::from(Span::styled(format!(" {t} "), DIM))
 }
 
+/// Key hints on a pop-up's border (the F1 menu), in the border's colour:
+/// dark grey is for quiet text on a screen, so a pop-up never blends into
+/// the screen behind it.
+fn popup_hints(t: &str) -> Line<'static> {
+    Line::from(Span::styled(format!(" {t} "), Style::new().fg(ACCENT)))
+}
+
 impl App {
     // ---------------------------------------------------------------- drawing
 
@@ -346,20 +353,14 @@ impl App {
     fn draw_menu(&self, fr: &mut Frame, sel: usize, filter: &str) {
         let items = self.filtered_menu(filter);
         let mut lines: Vec<Line> = Vec::new();
+        // A search box: "Search" until something is typed.
         lines.push(Line::from(vec![
-            Span::styled(" Filter: ", DIM),
-            Span::styled(
-                if filter.is_empty() {
-                    "type to search".to_string()
-                } else {
-                    filter.to_string()
-                },
-                if filter.is_empty() {
-                    DIM
-                } else {
-                    Style::new().fg(Color::White)
-                },
-            ),
+            Span::styled(" › ", Style::new().fg(ACCENT)),
+            if filter.is_empty() {
+                Span::styled("Search", DIM)
+            } else {
+                Span::styled(filter.to_string(), Style::new().fg(Color::White))
+            },
         ]));
         lines.push("".into());
         for (i, (_, label, admin)) in items.iter().enumerate() {
@@ -389,7 +390,10 @@ impl App {
             ]));
         }
         if items.is_empty() {
-            lines.push(Line::from(Span::styled("   nothing matches", DIM)));
+            lines.push(Line::from(Span::styled(
+                "   nothing matches",
+                Style::new().fg(Color::Gray),
+            )));
         }
         let area = Rect {
             y: fr.area().y + 2,
@@ -399,7 +403,9 @@ impl App {
         fr.render_widget(Clear, area);
         let block = Block::bordered()
             .title(title("Menu"))
-            .title_bottom(hints("↑↓ choose  Enter run  Esc close"))
+            .title_bottom(popup_hints(
+                "↑↓ choose  type to search  Enter run  Esc close",
+            ))
             .border_style(Style::new().fg(ACCENT));
         fr.render_widget(Paragraph::new(lines).block(block), area);
     }

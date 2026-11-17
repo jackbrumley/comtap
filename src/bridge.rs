@@ -138,6 +138,52 @@ pub fn run_link(link: Link, com: Port, stop: Arc<AtomicBool>, st: Shared, traffi
     set_state(&st, "stopped", None);
 }
 
+/// A device that is off: keeps ComTap's side of its port open until the service stops, and
+/// never connects to the device. Open is what keeps the port (on Linux it makes the /dev link),
+/// and reading discards whatever the software sends, so the software's writes never block.
+pub fn hold_port(link: Link, com: Port, stop: Arc<AtomicBool>, st: Shared) {
+    let device_path = ports::describe(&com);
+    log!(
+        "[{}] Off: keeping {} for the software, not connecting to {}",
+        link.name,
+        ports::software_path(&link.com),
+        link.tcp
+    );
+    let mut last_err = String::new();
+    while !stop.load(Ordering::Relaxed) {
+        let mut dev = match ports::open(&com) {
+            Ok((dev, _)) => dev,
+            Err(e) => {
+                let msg = format!("cannot open {device_path}: {e}");
+                if msg != last_err {
+                    log!("[{}] {msg}. Retrying every 5 s.", link.name);
+                    last_err = msg.clone();
+                }
+                set_state(&st, "com-error", Some(msg));
+                nap(Duration::from_secs(5), &stop);
+                continue;
+            }
+        };
+        last_err.clear();
+        set_state(&st, "off", None);
+        let mut buf = [0u8; 4096];
+        while !stop.load(Ordering::Relaxed) {
+            match dev.read(&mut buf) {
+                Ok(0) => nap(POLL, &stop),
+                Ok(_) => {} // the device is off: what the software sends goes nowhere
+                Err(e) if is_timeout(&e) => {}
+                Err(e) => {
+                    let msg = format!("{device_path} failed: {e}");
+                    log!("[{}] {msg}. Reopening.", link.name);
+                    set_state(&st, "com-error", Some(msg));
+                    nap(Duration::from_secs(1), &stop);
+                    break;
+                }
+            }
+        }
+    }
+}
+
 fn connect(addr: &str) -> io::Result<TcpStream> {
     let mut last = io::Error::new(ErrorKind::NotFound, format!("{addr} did not resolve"));
     for sa in addr.to_socket_addrs()? {

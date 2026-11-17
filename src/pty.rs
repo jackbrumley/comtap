@@ -276,13 +276,25 @@ pub fn open(port: &Port) -> io::Result<(Box<dyn Device>, String)> {
 mod tests {
     use super::*;
     use std::os::unix::fs::OpenOptionsExt;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Tests run in parallel and COMTAP_DEV_DIR is process-wide: each test holds this lock
+    /// while it uses its own folder.
+    static DEV_DIR: Mutex<()> = Mutex::new(());
+
+    fn own_dev_dir(test: &str) -> (MutexGuard<'static, ()>, PathBuf) {
+        let guard = DEV_DIR.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("comtap-{test}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: tests in this module are the only users of COMTAP_DEV_DIR, and each sets it
+        // while holding DEV_DIR.
+        unsafe { std::env::set_var("COMTAP_DEV_DIR", &dir) };
+        (guard, dir)
+    }
 
     #[test]
     fn pty_reports_software_open_and_carries_data() {
-        let dir = std::env::temp_dir().join(format!("comtap-pty-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: tests in this module are the only users of COMTAP_DEV_DIR.
-        unsafe { std::env::set_var("COMTAP_DEV_DIR", &dir) };
+        let (_guard, dir) = own_dev_dir("pty");
         let (mut dev, desc) = open(&Port {
             name: "ttyComTapTest".into(),
         })
@@ -324,6 +336,53 @@ mod tests {
 
         // Dropping ComTap's side removes the link.
         drop(dev);
+        assert!(std::fs::symlink_metadata(&link).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A device that is off keeps its link, takes what the software sends without blocking it,
+    /// and removes the link when the service stops.
+    #[test]
+    fn a_device_that_is_off_keeps_its_link() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (_guard, dir) = own_dev_dir("off");
+        let link = dir.join("ttyComTapOff");
+        let stop = Arc::new(AtomicBool::new(false));
+        let st: crate::status::Shared = Arc::new(Mutex::new(Default::default()));
+        let hold = {
+            let (stop, st) = (stop.clone(), st.clone());
+            std::thread::spawn(move || {
+                crate::bridge::hold_port(
+                    Link {
+                        name: "off".into(),
+                        tcp: "127.0.0.1:9".into(),
+                        com: "ttyComTapOff".into(),
+                        enabled: false,
+                    },
+                    Port {
+                        name: "ttyComTapOff".into(),
+                    },
+                    stop,
+                    st,
+                )
+            })
+        };
+        let start = std::time::Instant::now();
+        while std::fs::read_link(&link).is_err() {
+            assert!(start.elapsed().as_secs() < 5, "the link never appeared");
+            std::thread::sleep(POLL);
+        }
+        assert_eq!(st.lock().unwrap().state, "off");
+        let mut sw = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(&link)
+            .unwrap();
+        // More than a pty buffers: it only completes because the held port reads it.
+        sw.write_all(&[b'x'; 64 * 1024]).unwrap();
+        drop(sw);
+        stop.store(true, Ordering::Relaxed);
+        hold.join().unwrap();
         assert!(std::fs::symlink_metadata(&link).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

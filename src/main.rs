@@ -229,42 +229,26 @@ pub fn run_all(cfg_path: &Path, stop: Arc<AtomicBool>) -> Result<()> {
         }
     };
 
-    // A device that is off keeps its port (held here until the service stops), so the
-    // software keeps its setting, but gets no bridge, so it uses none of the device's
-    // connections.
-    let mut kept_ports = Vec::new();
-    let mut threads = Vec::new();
-    for (((link, dev), st), tr) in cfg
+    // A device that is off keeps its port, so the software keeps its setting, but gets no
+    // bridge, so it uses none of the device's connections.
+    let threads: Vec<_> = cfg
         .links
         .iter()
         .zip(devices)
         .zip(shared.iter().cloned())
         .zip(traffic.iter().cloned())
-    {
-        if !link.enabled {
-            log!(
-                "{} ({}) is off: not connecting to {}",
-                link.name,
-                link.com,
-                link.tcp
-            );
-            status::set_state(&st, "off", None);
-            kept_ports.push(dev);
-            continue;
-        }
-        let (link, stop) = (link.clone(), stop.clone());
-        threads.push(std::thread::spawn(move || {
-            bridge::run_link(link, dev, stop, st, tr)
-        }));
-    }
-    // With every device off there are no bridges to wait on, so wait for the stop itself.
-    while !stop.load(Ordering::Relaxed) {
-        bridge::nap(Duration::from_secs(1), &stop);
-    }
+        .map(|(((link, dev), st), tr)| {
+            let (link, stop) = (link.clone(), stop.clone());
+            if link.enabled {
+                std::thread::spawn(move || bridge::run_link(link, dev, stop, st, tr))
+            } else {
+                std::thread::spawn(move || bridge::hold_port(link, dev, stop, st))
+            }
+        })
+        .collect();
     for t in threads {
         let _ = t.join();
     }
-    drop(kept_ports);
     let _ = writer.join();
     let _ = flusher.join();
     Ok(())

@@ -137,7 +137,9 @@ necessary `#[allow]` carries a comment saying why.
 - `src/bridge.rs`: one device's bridge: COM side open for ever, TCP side
   reconnecting with backoff and keepalive.
 - `src/traffic.rs`: the per-device traffic log (RawTap's grouping), and
-  reading it back for the screen. `src/codec.rs`: hex and text, as RawTap's.
+  reading it back for the screen. What the software sends after the device
+  asks for a password (RawTap's prompt wording), up to Enter, is logged as
+  `<hidden>`, without its length. `src/codec.rs`: hex and text, as RawTap's.
 - `src/status.rs`: `status.json`, written by the service, read by the screen.
 - `src/update.rs`: the update check and starting the website's update
   script (`docs/update.sh` / `docs/update.ps1`).

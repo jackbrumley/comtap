@@ -9,6 +9,14 @@
 //! ```
 //!
 //! Files older than 14 days are deleted, and each link's files are capped at 50 MB in total.
+//!
+//! What the software sends after the device asks for a password ("Password:", "Passcode:"...),
+//! up to its Enter, is logged as `<hidden>`, never the characters or how many there were:
+//!
+//! ```text
+//! 2026-11-16 12:02:10.400 RX 50 61 73 73 77 6F 72 64 3A 20 | Password:<SP>
+//! 2026-11-16 12:02:12.901 TX <hidden>
+//! ```
 use crate::codec;
 use chrono::{DateTime, Local};
 use std::fs::{self, File, OpenOptions};
@@ -18,6 +26,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub const GAP: Duration = Duration::from_millis(30);
+/// What a password sent at a password prompt is logged as.
+const HIDDEN: &str = "<hidden>";
 const MAX_ENTRY: usize = 1024;
 const KEEP_DAYS: i64 = 14;
 pub const CAP_BYTES: u64 = 50 * 1024 * 1024;
@@ -42,10 +52,70 @@ struct Pending {
     start: DateTime<Local>,
     last: Instant,
     data: Vec<u8>,
+    /// A password being sent: written as `<hidden>`, its bytes never kept.
+    hidden: bool,
+}
+
+/// The device's current output line, to spot a password prompt.
+#[derive(Default)]
+struct PromptWatch {
+    line: String,
+    /// Inside an escape sequence (ESC, then CSI's parameters).
+    escape: bool,
+    csi: bool,
+    /// The device asked for a secret: what's sent next, up to Enter, is hidden.
+    secret: bool,
+}
+
+impl PromptWatch {
+    fn feed(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            if self.escape {
+                if self.csi {
+                    if (0x40..=0x7e).contains(&b) {
+                        (self.escape, self.csi) = (false, false);
+                    }
+                } else if b == b'[' {
+                    self.csi = true;
+                } else {
+                    self.escape = false;
+                }
+                continue;
+            }
+            match b {
+                0x1b => self.escape = true,
+                // A new line without an answer: the prompt has gone.
+                b'\r' | b'\n' => {
+                    self.line.clear();
+                    self.secret = false;
+                }
+                0x08 => {
+                    self.line.pop();
+                }
+                0x20..=0x7e if self.line.len() < 200 => self.line.push(b as char),
+                _ => {}
+            }
+        }
+        // An echoed '*' moves the line on, but the prompt still stands.
+        if asks_for_secret(&self.line) {
+            self.secret = true;
+        }
+    }
+}
+
+/// True when a prompt line asks for a password or another secret, e.g.
+/// "Password:" or "admin@switch's password: " (as RawTap's `term::asks_for_secret`).
+fn asks_for_secret(prompt: &str) -> bool {
+    let t = prompt.trim_end().to_lowercase();
+    t.ends_with(':')
+        && ["password", "passcode", "passphrase", "secret", "pin"]
+            .iter()
+            .any(|w| t.contains(w))
 }
 
 struct Inner {
     pending: Option<Pending>,
+    prompt: PromptWatch,
     file: Option<File>,
     day: String,
     size: u64,
@@ -72,6 +142,7 @@ impl Traffic {
             com: com.to_string(),
             inner: Mutex::new(Inner {
                 pending: None,
+                prompt: PromptWatch::default(),
                 file: None,
                 day: String::new(),
                 size: 0,
@@ -91,13 +162,46 @@ impl Traffic {
             return;
         }
         let mut g = self.inner.lock().unwrap();
+        let mut bytes = bytes;
+        if dir == Dir::Tx && g.prompt.secret {
+            let enter = bytes.iter().position(|&b| b == b'\r' || b == b'\n');
+            self.record_hidden(&mut g);
+            let Some(i) = enter else { return };
+            // The answer ends at Enter; anything after it is logged as usual.
+            self.flush(&mut g);
+            g.prompt.secret = false;
+            bytes = &bytes[i + 1..];
+        }
+        self.record_visible(&mut g, dir, bytes);
+        if dir == Dir::Rx {
+            g.prompt.feed(bytes);
+        }
+    }
+
+    /// A password being sent: one `<hidden>` entry, however it arrives.
+    fn record_hidden(&self, g: &mut Inner) {
+        if g.pending.as_ref().is_some_and(|p| !p.hidden) {
+            self.flush(g);
+        }
+        let now = Instant::now();
+        let p = g.pending.get_or_insert_with(|| Pending {
+            dir: Dir::Tx,
+            start: Local::now(),
+            last: now,
+            data: Vec::new(),
+            hidden: true,
+        });
+        p.last = now;
+    }
+
+    fn record_visible(&self, g: &mut Inner, dir: Dir, bytes: &[u8]) {
         let now = Instant::now();
         let split = g
             .pending
             .as_ref()
-            .is_some_and(|p| p.dir != dir || now.duration_since(p.last) > GAP);
+            .is_some_and(|p| p.dir != dir || p.hidden || now.duration_since(p.last) > GAP);
         if split {
-            self.flush(&mut g);
+            self.flush(g);
         }
         for &b in bytes {
             let p = g.pending.get_or_insert_with(|| Pending {
@@ -105,11 +209,12 @@ impl Traffic {
                 start: Local::now(),
                 last: now,
                 data: Vec::new(),
+                hidden: false,
             });
             p.data.push(b);
             p.last = now;
             if b == b'\n' || p.data.len() >= MAX_ENTRY {
-                self.flush(&mut g);
+                self.flush(g);
             }
         }
     }
@@ -125,16 +230,25 @@ impl Traffic {
         self.write_line(&mut g, &line);
     }
 
-    /// Ends an entry that has been quiet for longer than GAP.
+    /// Ends an entry that has been quiet for longer than GAP. A password
+    /// being typed stays one entry until its Enter.
     pub fn flush_idle(&self) {
         let mut g = self.inner.lock().unwrap();
-        if g.pending.as_ref().is_some_and(|p| p.last.elapsed() > GAP) {
+        if g.pending
+            .as_ref()
+            .is_some_and(|p| !p.hidden && p.last.elapsed() > GAP)
+        {
             self.flush(&mut g);
         }
     }
 
     fn flush(&self, g: &mut Inner) {
         let Some(p) = g.pending.take() else { return };
+        if p.hidden {
+            let line = format!("{} TX {HIDDEN}", p.start.format("%Y-%m-%d %H:%M:%S%.3f"));
+            self.write_line(g, &line);
+            return;
+        }
         let line = format!(
             "{} {} {} | {}",
             p.start.format("%Y-%m-%d %H:%M:%S%.3f"),
@@ -225,6 +339,10 @@ pub enum Line {
         time: String,
         msg: String,
     },
+    /// A password sent at a password prompt.
+    Hidden {
+        time: String,
+    },
 }
 
 pub fn parse_line(s: &str) -> Option<Line> {
@@ -239,6 +357,9 @@ pub fn parse_line(s: &str) -> Option<Line> {
             time,
             msg: msg.to_string(),
         });
+    }
+    if rest == format!("TX {HIDDEN}") {
+        return Some(Line::Hidden { time });
     }
     let dir = match rest.get(..3)? {
         "RX " => Dir::Rx,
@@ -303,6 +424,49 @@ mod tests {
         assert!(matches!(&lines[3], Line::Data { dir: Dir::Tx, bytes, .. } if bytes == b"T\r"));
         assert!(matches!(&lines[4], Line::Event { msg, .. } if msg == "disconnected: test"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_password_after_a_prompt_is_logged_as_hidden() {
+        let dir = tmp("hidden");
+        let t = Traffic::new(Some(dir.clone()), "COM9");
+        t.record(Dir::Rx, b"\r\nUsername: ");
+        t.record(Dir::Tx, b"admin\r");
+        t.record(Dir::Rx, b"\r\n\x1b[1mPassword:\x1b[0m ");
+        // Typed a key at a time, with a '*' echoed for each.
+        for b in b"s3cret" {
+            t.record(Dir::Tx, &[*b]);
+            t.record(Dir::Rx, b"*");
+        }
+        t.record(Dir::Tx, b"\rshow\r");
+        t.record(Dir::Rx, b"\r\nswitch>");
+        t.event("end");
+        let text = fs::read_to_string(file_for(
+            &dir,
+            "COM9",
+            &Local::now().format("%Y-%m-%d").to_string(),
+        ))
+        .unwrap();
+        assert!(
+            !text.contains("s3cret") && !text.contains("73 33"),
+            "{text}"
+        );
+        assert!(text.contains("TX <hidden>"), "{text}");
+        assert!(text.contains("admin") && text.contains("show"), "{text}");
+        let (lines, _) = tail(&dir, "COM9", 1 << 20);
+        assert!(lines.iter().any(|l| matches!(l, Line::Hidden { .. })));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_prompt_that_moves_on_hides_nothing() {
+        let mut watch = PromptWatch::default();
+        watch.feed(b"Password: ");
+        assert!(watch.secret);
+        watch.feed(b"\r\n% Timeout\r\nswitch>");
+        assert!(!watch.secret);
+        watch.feed(b"admin@host's password: ");
+        assert!(watch.secret);
     }
 
     #[test]

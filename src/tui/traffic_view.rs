@@ -69,6 +69,10 @@ pub(super) fn entry_lines(l: &traffic::Line, width: u16, fmt: Fmt) -> Vec<Line<'
                 Span::styled(body, style),
             ])]
         }
+        traffic::Line::Hidden { time } => vec![Line::from(vec![
+            Span::styled(format!("{time} TX "), DIM),
+            Span::styled("<hidden>", Style::new().fg(Color::Magenta)),
+        ])],
         traffic::Line::Data { time, dir, bytes } => {
             let rx = *dir == Dir::Rx;
             let tag = if rx { "RX" } else { "TX" };

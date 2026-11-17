@@ -175,7 +175,7 @@ On Windows, everything ComTap writes is in `C:\ProgramData\ComTap` (the service 
 
 On Linux the same files are in `/etc/comtap` (config), `/var/lib/comtap` (`status.json`, `traffic/`) and `/var/log/comtap` (logs); the program is `/usr/local/bin/comtap` and the service is `/etc/systemd/system/comtap.service` (`journalctl -u comtap` shows its output).
 
-The traffic log groups bytes like RawTap's raw log: a new entry on a newline, a 30 ms gap, a change of direction, or every 1 KB. It's readable in Notepad, kept for 14 days and capped at 50 MB per device.
+The traffic log groups bytes like RawTap's raw log: a new entry on a newline, a 30 ms gap, a change of direction, or every 1 KB. It's readable in Notepad, kept for 14 days and capped at 50 MB per device. When the device asks for a password (`Password:`, `Passcode:`, `Passphrase:`, `Secret:`, `PIN:`), what your software sends next, up to its Enter, is logged as `<hidden>`, never the characters or how many there were. A prompt worded differently isn't recognised.
 
 ```
 2026-11-16 12:01:29.120 RX 30 39 38 37 36 35 34 33 32 31 0D 0A | 0987654321<CR><LF>

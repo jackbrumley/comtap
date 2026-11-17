@@ -366,6 +366,7 @@ mod tests {
             name: "test".into(),
             tcp: scanner.local_addr().unwrap().to_string(),
             com: "COM99".into(),
+            enabled: true,
         };
         let (com_side, mut software) = fake_com();
         let stop = Arc::new(AtomicBool::new(false));
@@ -418,6 +419,7 @@ mod tests {
             name: "late".into(),
             tcp: addr.to_string(),
             com: "COM98".into(),
+            enabled: true,
         };
         let (com_side, mut software) = fake_com();
         let stop = Arc::new(AtomicBool::new(false));
@@ -495,6 +497,7 @@ mod tests {
             name: "idle".into(),
             tcp: scanner.local_addr().unwrap().to_string(),
             com: "COM97".into(),
+            enabled: true,
         };
         let com = FakeCom::default();
         let stop = Arc::new(AtomicBool::new(false));

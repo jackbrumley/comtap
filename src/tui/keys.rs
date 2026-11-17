@@ -80,6 +80,11 @@ impl App {
         let mut v = vec![(Act::Add, "Add a device".to_string(), "A", true)];
         if !self.cfg.links.is_empty() {
             v.push((Act::Edit, "Edit this device".into(), "Enter", true));
+            let toggle = match self.cfg.links.get(self.sel) {
+                Some(l) if !l.enabled => "Turn this device on",
+                _ => "Turn this device off",
+            };
+            v.push((Act::Toggle, toggle.into(), "Space", true));
             v.push((Act::Delete, "Delete this device".into(), "D", true));
         }
         if !self.installed {
@@ -133,6 +138,28 @@ impl App {
             .collect()
     }
 
+    /// Turns a device off or on and applies it, like saving the device. Off keeps the device and
+    /// its port; the service just doesn't connect to it.
+    pub(super) fn toggle_device(&mut self, i: usize) {
+        let mut new = self.cfg.clone();
+        let link = &mut new.links[i];
+        link.enabled = !link.enabled;
+        let note = if link.enabled {
+            format!(
+                "{} is on: ComTap connects to {} again.",
+                link.name, link.tcp
+            )
+        } else {
+            format!(
+                "{} is off: ComTap no longer connects to {}. {} stays for your software.",
+                link.name, link.tcp, link.com
+            )
+        };
+        self.start_plan(&setup::APPLY, After::Main, note, move |r| {
+            setup::apply(&new, r)
+        });
+    }
+
     pub(super) fn open_name(&self, act: Act) -> String {
         match act {
             Act::Add => "add".into(),
@@ -157,6 +184,7 @@ impl App {
             Act::Delete if !self.cfg.links.is_empty() => {
                 self.overlay = Overlay::ConfirmDelete(self.sel)
             }
+            Act::Toggle if !self.cfg.links.is_empty() => self.toggle_device(self.sel),
             Act::Install => {
                 if self.cfg.links.is_empty() {
                     self.screen = Screen::Form(self.form(None));
@@ -302,6 +330,9 @@ impl App {
             KeyCode::Char('u') | KeyCode::Char('U') => self.run_act(Act::CheckUpdates, false),
             KeyCode::Enter => self.run_act(if n == 0 { Act::Add } else { Act::Edit }, true),
             KeyCode::Char('a') | KeyCode::Char('A') => self.run_act(Act::Add, true),
+            KeyCode::Char(' ') | KeyCode::Char('e') | KeyCode::Char('E') if n > 0 => {
+                self.run_act(Act::Toggle, true)
+            }
             KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete if n > 0 => {
                 self.run_act(Act::Delete, true)
             }

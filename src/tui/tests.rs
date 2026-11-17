@@ -11,11 +11,13 @@ fn sample() -> App {
                 name: "Dock 3 scanner".into(),
                 tcp: "10.1.128.186:51236".into(),
                 com: "COM23".into(),
+                enabled: true,
             },
             Link {
                 name: "Scale".into(),
                 tcp: "10.1.128.190:4001".into(),
                 com: "COM24".into(),
+                enabled: true,
             },
         ],
     };
@@ -272,4 +274,26 @@ fn update_dialog_waits_until_the_main_screen_is_free() {
         matches!(app.overlay, Overlay::None),
         "the dialog opened twice"
     );
+}
+
+#[test]
+fn a_device_that_is_off_shows_off_and_how_to_turn_it_on() {
+    let mut app = sample();
+    app.cfg.links[0].enabled = false;
+    let s = render(&app, 120, 30);
+    assert!(s.contains("○ Dock 3 scanner"), "{s}");
+    assert!(s.contains("off"), "{s}");
+    assert!(s.contains("Space turns it on"), "{s}");
+    assert!(s.contains("● Scale"), "{s}");
+}
+
+#[test]
+fn space_needs_admin_to_turn_a_device_off() {
+    let mut app = sample();
+    app.key(KeyEvent::new(KeyCode::Char(' '), event::KeyModifiers::NONE));
+    assert!(
+        matches!(app.overlay, Overlay::Admin { .. }),
+        "view only changed a device"
+    );
+    assert!(app.cfg.links[0].enabled);
 }

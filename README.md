@@ -44,6 +44,7 @@ ComTap is a service for Windows and Linux that makes a network (TCP) device show
 - Windows: sets up its own virtual COM ports with the signed com0com driver, with Secure Boot and Memory Integrity on
 - Linux: a pseudo-terminal per device at a fixed name such as `/dev/ttyComTap0`, with no driver to install
 - Any number of devices, each on its own COM port
+- Turn a device off without losing it: it keeps its settings and COM port, and frees the device's connection
 - A RawTap-style screen shows each device live, with every byte in hex and text
 - Updates itself from GitHub and keeps your settings
 

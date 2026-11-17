@@ -156,6 +156,11 @@ impl App {
                         },
                         tcp: format!("{}:{}", f.fields[F_HOST].trim(), f.fields[F_PORT].trim()),
                         com: f.fields[F_COM].clone(),
+                        // Editing keeps the device on or off; a new device starts on.
+                        enabled: f
+                            .idx
+                            .and_then(|i| self.cfg.links.get(i))
+                            .is_none_or(|l| l.enabled),
                     };
                     let mut new = self.cfg.clone();
                     match f.idx {

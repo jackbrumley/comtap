@@ -120,6 +120,7 @@ enum Overlay {
 enum Act {
     Add,
     Edit,
+    Toggle,
     Delete,
     Install,
     Restart,
@@ -434,6 +435,7 @@ fn trunc(s: &str, n: usize) -> String {
     }
 }
 
+mod device_list;
 mod draw;
 mod form;
 mod keys;

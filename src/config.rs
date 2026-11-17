@@ -15,6 +15,18 @@ pub struct Link {
     pub tcp: String,
     /// The port your software opens: "COM5" on Windows, "ttyComTap0" (/dev/ttyComTap0) on Linux.
     pub com: String,
+    /// Off: the device stays in the list and keeps its port, but ComTap doesn't connect to it,
+    /// so the device's connection slot is free. Written only when off.
+    #[serde(default = "on", skip_serializing_if = "is_on")]
+    pub enabled: bool,
+}
+
+fn on() -> bool {
+    true
+}
+
+fn is_on(enabled: &bool) -> bool {
+    *enabled
 }
 
 #[cfg(windows)]
@@ -97,6 +109,21 @@ mod tests {
     fn example_parses() {
         let c = Config::parse(EXAMPLE).unwrap();
         assert_eq!(c.links.len(), 1);
+    }
+
+    #[test]
+    fn enabled_defaults_on_and_is_written_only_when_off() {
+        let com = if cfg!(windows) { "COM5" } else { "ttyComTap0" };
+        let mut c = Config::parse(&format!(
+            r#"{{"links":[{{"name":"a","tcp":"1.2.3.4:5","com":"{com}"}}]}}"#
+        ))
+        .unwrap();
+        assert!(c.links[0].enabled);
+        assert!(!serde_json::to_string(&c).unwrap().contains("enabled"));
+        c.links[0].enabled = false;
+        let text = serde_json::to_string(&c).unwrap();
+        assert!(text.contains(r#""enabled":false"#), "{text}");
+        assert!(!Config::parse(&text).unwrap().links[0].enabled);
     }
 
     #[cfg(windows)]

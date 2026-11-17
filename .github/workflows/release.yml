@@ -223,6 +223,26 @@ jobs:
       - name: Data from the device arrives on the COM port
         run: ./.github/scripts/read-com-port.ps1 -Port COM9 -Expect "CI-TEST-123"
 
+      # Off: the device stays in the config and keeps COM9, but ComTap holds no
+      # connection to it. Then on again; the steps below check data still flows.
+      - name: A device that is off keeps its port and doesn't connect
+        run: |
+          $exe = Join-Path $env:ProgramFiles "ComTap\comtap.exe"
+          $config = Join-Path $env:RUNNER_TEMP "comtap_config.json"
+          '{ "links": [ { "name": "CI device", "tcp": "127.0.0.1:52317", "com": "COM9", "enabled": false } ] }' | Set-Content -Path $config
+          & $exe install --config $config
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Start-Sleep -Seconds 5
+          $status = (& $exe status) -join "`n"
+          Write-Host $status
+          if ($status -notmatch "state\s+off") { Write-Error "the device is not off"; exit 1 }
+          if ([System.IO.Ports.SerialPort]::GetPortNames() -notcontains "COM9") { Write-Error "COM9 went away while the device is off"; exit 1 }
+          $held = @(Get-NetTCPConnection -RemotePort 52317 -State Established -ErrorAction SilentlyContinue)
+          if ($held.Count) { Write-Error "ComTap still holds a connection to the device"; exit 1 }
+          '{ "links": [ { "name": "CI device", "tcp": "127.0.0.1:52317", "com": "COM9" } ] }' | Set-Content -Path $config
+          & $exe install --config $config
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
       - name: Update in place (settings stay)
         run: |
           ./docs/install.ps1 -Version $env:TAG -NoRelaunch
@@ -310,6 +330,20 @@ jobs:
 
       - name: Data from the device arrives on the port
         run: bash .github/scripts/read-pty.sh /dev/ttyComTap0 CI-TEST-123
+
+      # Off: the device stays in the config and keeps its port, but ComTap holds
+      # no connection to it. Then on again; the steps below check data still flows.
+      - name: A device that is off keeps its port and doesn't connect
+        run: |
+          echo '{ "links": [ { "name": "CI device", "tcp": "127.0.0.1:52317", "com": "ttyComTap0", "enabled": false } ] }' > "$RUNNER_TEMP/comtap_config.json"
+          sudo comtap install --config "$RUNNER_TEMP/comtap_config.json"
+          sleep 5
+          comtap status | tee "$RUNNER_TEMP/status.txt"
+          grep -Eq 'state +off' "$RUNNER_TEMP/status.txt" || { echo "the device is not off"; exit 1; }
+          [[ -L /dev/ttyComTap0 ]] || { echo "/dev/ttyComTap0 went away while the device is off"; exit 1; }
+          if ss -Htn state established '( dport = :52317 )' | grep -q .; then echo "ComTap still holds a connection to the device"; exit 1; fi
+          echo '{ "links": [ { "name": "CI device", "tcp": "127.0.0.1:52317", "com": "ttyComTap0" } ] }' > "$RUNNER_TEMP/comtap_config.json"
+          sudo comtap install --config "$RUNNER_TEMP/comtap_config.json"
 
       - name: Update in place (settings stay)
         run: |

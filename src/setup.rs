@@ -85,10 +85,14 @@ fn ports_summary(links: &[Link]) -> String {
         .join(", ")
 }
 
-/// Waits up to 15 s for the service to report every link connected.
+/// Waits up to 15 s for the service to report every device that is on connected.
 fn check_connects(links: &[Link]) -> Result<St> {
     if links.is_empty() {
         return Ok(St::Skip("no devices".into()));
+    }
+    let links: Vec<&Link> = links.iter().filter(|l| l.enabled).collect();
+    if links.is_empty() {
+        return Ok(St::Skip("every device is off".into()));
     }
     let end = Instant::now() + Duration::from_secs(15);
     let started = chrono::Local::now().timestamp();

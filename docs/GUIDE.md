@@ -66,7 +66,7 @@ If a step fails, it shows × with the reason, and Enter goes back to the form to
 │12:01:40.002 TX HEX  54 0D                                                                  │
 │12:01:40.002 TX TEXT T<CR>                                                                  │
 └────────────────────────────────────────────────────────────────────────────────────────────┘
- F1 menu  ↑↓ device  Enter edit  A add  D delete  F8 format  PgUp/PgDn scroll  U updates  L logs  Q quit
+ F1 menu  ↑↓ device  Enter edit  Space on/off  A add  D delete  F8 format  PgUp/PgDn scroll  U updates  L logs  Q quit
 ```
 
 - **Anyone can view.** Changes need admin: ComTap offers to reopen itself as admin, straight back at what you chose.
@@ -74,6 +74,7 @@ If a step fails, it shows × with the reason, and Enter goes back to the form to
 - **U** checks for updates now; **L** opens the log folder. The top line shows the version you run.
 - **Any number of devices:** each gets its own COM port. One service runs them all.
 - Saving a device applies it straight away, with the same kind of checklist.
+- **Space** (or **E**) turns the selected device off or on. A device that is off stays in the list with its IP, TCP port and COM port, and keeps its COM port, so your software keeps its setting, but ComTap doesn't connect to it. That frees one of the device's connections (a barcode scanner may allow only a few). Press Space again to turn it back on.
 
 ## Updates
 
@@ -119,6 +120,7 @@ comtap --version
 
 - `tcp` is the device's address. The device is the TCP server.
 - `com` is the port your software opens. Windows: `COM1` to `COM255`; each device gets its own pair. Linux: a name such as `ttyComTap0`, opened as `/dev/ttyComTap0`.
+- `"enabled": false` turns a device off (Space on the screen writes it). Left out, the device is on.
 
 ## Reliability
 

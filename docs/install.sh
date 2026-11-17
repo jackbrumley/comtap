@@ -252,7 +252,10 @@ run_as_root bash -c '
   if [ -n "$4" ]; then
     usermod -aG "$4" "$5" || status=4
   fi
-  if "$2" launcher; then
+  # Versions before 1.4.0 have no `launcher` command (and no menu entry).
+  if ! "$2" launcher --help >/dev/null 2>&1; then
+    echo "[comtap] This version has no app menu entry; 1.4.0 and later add one."
+  elif "$2" launcher; then
     if command -v update-desktop-database >/dev/null 2>&1; then
       update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
     fi

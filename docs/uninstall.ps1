@@ -18,6 +18,14 @@ param(
   [switch]$Elevated
 )
 
+# Windows PowerShell started from PowerShell 7, or from a program started
+# there, inherits PowerShell 7's module folders, loads PowerShell 7's modules,
+# and can't find commands such as Get-FileHash. Keep only the other folders;
+# Windows PowerShell's own are named WindowsPowerShell.
+if ($PSVersionTable.PSEdition -ne "Core") {
+  $env:PSModulePath = ($env:PSModulePath -split ";" | Where-Object { $_ -and $_ -notmatch '\\PowerShell\\' }) -join ";"
+}
+
 $Site = "https://brumley.info/comtap"
 $InstallDir = Join-Path $env:ProgramFiles "ComTap"
 $Exe = Join-Path $InstallDir "comtap.exe"

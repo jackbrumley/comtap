@@ -20,5 +20,10 @@ the Release and Update Standard (see `AGENTS.md`).
 
 ## Ideas / Parking Lot
 
+- Linux app-menu launcher with ComTap's own taskbar icon, as RawTap 0.14.0
+  has (`Exec=comtap --own-window`, `Terminal=false`, `StartupWMClass`, and
+  RawTap's `src/linux_window.rs`): worth it once people start ComTap from
+  the menu rather than a terminal with sudo.
+
 - Line-ending fix-up per device, for software that expects a different
   ending from the one the device sends.

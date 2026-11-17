@@ -141,6 +141,14 @@ necessary `#[allow]` carries a comment saying why.
   asks for a password (RawTap's prompt wording), up to Enter, is logged as
   `<hidden>`, without its length. `src/codec.rs`: hex and text, as RawTap's.
 - `src/status.rs`: `status.json`, written by the service, read by the screen.
+- `src/launcher.rs`: Linux only. `comtap launcher` (run as root by
+  `install.sh`) writes the app menu entry
+  (`/usr/share/applications/info.brumley.comtap.desktop`: `Exec=comtap
+  --own-window`, `Terminal=false`, `StartupWMClass` = the app ID) and the
+  icon (built in from `packaging/icons/comtap-256.png`); `uninstall.sh`
+  removes both. `src/linux_window.rs` (RawTap's): `--own-window` opens
+  ComTap in the desktop's terminal with its window class set to the app ID,
+  so the taskbar shows ComTap's icon.
 - `src/update.rs`: the update check and starting the website's update
   script (`docs/update.sh` / `docs/update.ps1`).
 - `src/config.rs`, `src/paths.rs`, `src/logger.rs`: config, every on-disk
@@ -203,7 +211,8 @@ necessary `#[allow]` carries a comment saying why.
   `install.sh` uses sudo; there is no `install-system.ps1`, `-System`,
   AppImage or user install. On a PC with the service installed they stop the
   service, swap the program and run `comtap install` (settings stay);
-  otherwise they open the setup screen. `install.sh` also adds the user to
+  otherwise they open the setup screen. `install.sh` also adds the app menu
+  entry (`comtap launcher`) and adds the user to
   the serial-port group.
 - **Update log:** `C:\ProgramData\ComTap\logs\update.log` or
   `/var/log/comtap/update.log`.

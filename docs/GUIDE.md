@@ -26,7 +26,7 @@ ComTap makes a TCP device show up as a serial (COM) port, for serial-only softwa
 
 ## The screen
 
-Double-click `comtap.exe`, or the **ComTap** shortcut that install puts on the Public Desktop. It looks and works like RawTap.
+Double-click `comtap.exe`, or the **ComTap** shortcut that install puts on the Public Desktop. On Linux, open **ComTap** from your app menu (the installer adds it): it opens in a terminal window of its own, with ComTap's name and icon on the taskbar, or run `comtap` in a terminal. It looks and works like RawTap.
 
 **First run:** a welcome page explains the three steps and asks for admin once (UAC). Then:
 

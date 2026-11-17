@@ -6,6 +6,10 @@ mod codec;
 #[cfg(windows)]
 mod com0com;
 mod config;
+#[cfg(not(windows))]
+mod launcher;
+#[cfg(not(windows))]
+mod linux_window;
 mod logger;
 mod paths;
 mod ports;
@@ -21,6 +25,10 @@ mod tui;
 mod update;
 
 use anyhow::{Result, bail};
+
+/// ComTap's app ID (Release and Update Standard): the Linux menu entry's
+/// file name and its windows' class.
+pub const APP_ID: &str = "info.brumley.comtap";
 use clap::{Parser, Subcommand};
 use config::Config;
 use std::path::{Path, PathBuf};
@@ -43,6 +51,10 @@ struct Cli {
     /// Set by the updater when the install failed: says so, with the update log's path
     #[arg(long, hide = true)]
     update_failed: bool,
+    /// Open in a terminal window of ComTap's own (the app menu's entry)
+    #[cfg(not(windows))]
+    #[arg(long, hide = true)]
+    own_window: bool,
 }
 
 #[derive(Subcommand)]
@@ -79,10 +91,18 @@ enum Cmd {
     #[cfg(windows)]
     #[command(hide = true)]
     Service,
+    /// Add ComTap to the app menu (run as root; the installer does)
+    #[cfg(not(windows))]
+    #[command(hide = true)]
+    Launcher,
 }
 
 fn main() {
     let cli = Cli::parse();
+    #[cfg(not(windows))]
+    if cli.own_window && cli.cmd.is_none() {
+        open_own_window();
+    }
     let result = match cli.cmd {
         None => {
             logger::init(paths::logs_dir(), false);
@@ -123,12 +143,33 @@ fn main() {
                 }
                 #[cfg(windows)]
                 Cmd::Service => unreachable!(),
+                #[cfg(not(windows))]
+                Cmd::Launcher => launcher::install(),
             }
         }
     };
     if let Err(e) = result {
         eprintln!("Error: {e:#}");
         std::process::exit(1);
+    }
+}
+
+/// Started from the app menu: opens ComTap in a terminal window of its own
+/// and exits, unless this is that window. With no terminal to open, it says
+/// why (a desktop notification) and exits.
+#[cfg(not(windows))]
+fn open_own_window() {
+    match linux_window::ensure() {
+        linux_window::Outcome::Stay => {}
+        linux_window::Outcome::Started => std::process::exit(0),
+        linux_window::Outcome::Failed(error) => {
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() {
+                linux_window::report_without_terminal(&error);
+                std::process::exit(1);
+            }
+            eprintln!("{error}");
+        }
     }
 }
 

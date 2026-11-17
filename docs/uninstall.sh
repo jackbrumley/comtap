@@ -58,6 +58,9 @@ run_as_root bash -c '
     systemctl daemon-reload
   fi
   rm -f "$1"
+  # The app menu entry and icon (`comtap launcher`).
+  rm -f /usr/share/applications/info.brumley.comtap.desktop \
+    /usr/share/icons/hicolor/256x256/apps/comtap.png
   if [ "$3" = true ]; then
     rm -rf /etc/comtap /var/lib/comtap /var/log/comtap
   fi

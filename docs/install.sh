@@ -238,7 +238,9 @@ already_set_up=false
 #  - On a PC that is set up, `comtap install` stops the service, rewrites the
 #    unit, starts the service again and checks each device. Exit 3 means only
 #    that step failed; the new binary is in place.
-#  - Then the serial-port group, if needed. Exit 4 means only that failed.
+#  - Then the serial-port group, if needed, and the app menu entry and icon
+#    (`comtap launcher`). Neither stops the other: exit 4 means only the group
+#    failed, 5 only the menu entry, 6 both.
 root_status=0
 # shellcheck disable=SC2016 # $1..$5 expand in the root shell.
 run_as_root bash -c '
@@ -246,14 +248,29 @@ run_as_root bash -c '
   if [ "$3" = true ]; then
     "$2" install || exit 3
   fi
+  status=0
   if [ -n "$4" ]; then
-    usermod -aG "$4" "$5" || exit 4
+    usermod -aG "$4" "$5" || status=4
   fi
+  if "$2" launcher; then
+    if command -v update-desktop-database >/dev/null 2>&1; then
+      update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+      gtk-update-icon-cache -f -t -q /usr/share/icons/hicolor >/dev/null 2>&1 || true
+    fi
+  else
+    status=$((status == 4 ? 6 : 5))
+  fi
+  exit "$status"
 ' bash "$download" "$BIN_PATH" "$already_set_up" "$group" "$user" || root_status=$?
 case "$root_status" in
   0) ;;
   3) fail "ComTap ${release_tag} is installed at ${BIN_PATH}, but restarting the service failed; see the output above, or run: sudo comtap status" ;;
   4) warn "could not add ${user} to the ${group} group. Fix it with: sudo usermod -aG ${group} ${user}" ; group="" ;;
+  5|6) warn "ComTap is installed, but adding it to the app menu failed; see the output above, or run: sudo comtap launcher" ;;&
+  6) warn "could not add ${user} to the ${group} group. Fix it with: sudo usermod -aG ${group} ${user}" ; group="" ;;
+  5) ;;
   *) fail "the install failed (exit ${root_status}); see the output above" ;;
 esac
 log "Installed ${BIN_PATH} ($("$BIN_PATH" --version))"
